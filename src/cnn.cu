@@ -1,103 +1,119 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <cuda_runtime.h>
-#include <getopt.h>
-#include "cnn_naive.cuh"  // Include the header file with the naive kernel
-#include "utils.cuh"  // Include utils for performance measurement
+#include "../include/cnn_launcher.cuh"
 
-// Function to launch the convolution kernel
-PerformanceMetrics cnn_naive(float *h_input, float *h_output, float *h_mask, int dimX, int dimY, int dimK) {
-    float *d_input, *d_output, *d_mask;
+int main(int argc, char** argv) {
+    // Default dimensions
+    int dimX = 1024;
+    int dimY = 1024;
+    int dimK = 3;
+    
+    // Parse command line arguments
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "-i") == 0 && i + 1 < argc) {
+            dimX = atoi(argv[i + 1]);
+            i++;
+        } else if (strcmp(argv[i], "-j") == 0 && i + 1 < argc) {
+            dimY = atoi(argv[i + 1]);
+            i++;
+        } else if (strcmp(argv[i], "-k") == 0 && i + 1 < argc) {
+            dimK = atoi(argv[i + 1]);
+            i++;
+        }
+    }
+    
+    printf("Running 2D Convolution with image size: %d x %d, mask size: %d x %d\n", 
+           dimX, dimY, dimK, dimK);
+    
+    // Allocate host memory
     size_t img_size = dimX * dimY * sizeof(float);
     size_t mask_size = dimK * dimK * sizeof(float);
     
-    // Allocate device memory
-    cudaMalloc((void**)&d_input, img_size);
-    cudaMalloc((void**)&d_output, img_size);
-    cudaMalloc((void**)&d_mask, mask_size);
+    float *h_input = (float*)malloc(img_size);
+    float *h_output_cpu = (float*)malloc(img_size);
+    float *h_output_naive = (float*)malloc(img_size);
+    float *h_output_optimized = (float*)malloc(img_size);
+    float *h_output_vectorized = (float*)malloc(img_size);
+    float *h_mask = (float*)malloc(mask_size);
     
-    // Copy data to device
-    cudaMemcpy(d_input, h_input, img_size, cudaMemcpyHostToDevice);
-    cudaMemcpy(d_mask, h_mask, mask_size, cudaMemcpyHostToDevice);
+    if (!h_input || !h_output_cpu || !h_output_naive || 
+        !h_output_optimized || !h_output_vectorized || !h_mask) {
+        fprintf(stderr, "Failed to allocate host memory!\n");
+        return -1;
+    }
     
-    // Set grid and block dimensions
-    dim3 blockDim(16, 16);
-    dim3 gridDim((dimX + blockDim.x - 1) / blockDim.x, 
-                 (dimY + blockDim.y - 1) / blockDim.y);
+    // Initialize random number generator
+    srand(time(NULL));
     
-    // Measure performance using the naive kernel
-    PerformanceMetrics metrics = measurePerformance((void*)naiveConvolution2D, false,
-                                                   d_input, d_mask, d_output, 
-                                                   dimX, dimY, dimK, dimK,
-                                                   gridDim, blockDim);
+    // Generate random input data (0-15)
+    for (int i = 0; i < dimX * dimY; i++) {
+        h_input[i] = static_cast<float>(rand() % 16);
+    }
     
-    printf("Naive Convolution Performance: %f ms, %f GFLOPS\n", 
-           metrics.executionTime, metrics.gflops);
-
-    // Copy result back to host
-    cudaMemcpy(h_output, d_output, img_size, cudaMemcpyDeviceToHost);
-
-    // Free device memory
-    cudaFree(d_input);
-    cudaFree(d_output);
-    cudaFree(d_mask);
+    for (int i = 0; i < dimK * dimK; i++) {
+        h_mask[i] = static_cast<float>(rand() % 16);
+    }
     
-    return metrics;
-}
-
-// Function to launch the optimized convolution kernel using texture memory
-PerformanceMetrics cnn_optimized(float *h_input, float *h_output, float *h_mask, int dimX, int dimY, int dimK) {
-    float *d_input, *d_output, *d_mask;
-    size_t img_size = dimX * dimY * sizeof(float);
-    size_t mask_size = dimK * dimK * sizeof(float);
+    // Run CPU convolution
+    printf("\nRunning CPU implementation...\n");
+    PerformanceMetrics cpu_metrics = cnn_cpu(h_input, h_output_cpu, h_mask, dimX, dimY, dimK);
     
-    // Allocate device memory
-    cudaMalloc((void**)&d_input, img_size);
-    cudaMalloc((void**)&d_output, img_size);
-    cudaMalloc((void**)&d_mask, mask_size);
+    // Run naive GPU convolution
+    printf("\nRunning naive GPU implementation...\n");
+    PerformanceMetrics naive_metrics = cnn_naive(h_input, h_output_naive, h_mask, dimX, dimY, dimK);
     
-    // Copy data to device
-    cudaMemcpy(d_input, h_input, img_size, cudaMemcpyHostToDevice);
-    cudaMemcpy(d_mask, h_mask, mask_size, cudaMemcpyHostToDevice);
+    // Run optimized GPU convolution
+    printf("\nRunning optimized GPU implementation...\n");
+    PerformanceMetrics optimized_metrics = cnn_optimized(h_input, h_output_optimized, h_mask, dimX, dimY, dimK);
     
-    // Set up texture reference for input image
-    cudaChannelFormatDesc channelDesc = cudaCreateChannelDesc<float>();
-    cudaArray* cuArray;
-    cudaMallocArray(&cuArray, &channelDesc, dimX, dimY);
-    cudaMemcpyToArray(cuArray, 0, 0, h_input, img_size, cudaMemcpyHostToDevice);
+    // Run vectorized GPU convolution
+    printf("\nRunning vectorized GPU implementation...\n");
+    PerformanceMetrics vectorized_metrics = cnn_vectorized(h_input, h_output_vectorized, h_mask, dimX, dimY, dimK);
     
-    // Bind texture reference to the CUDA array
-    texRef.addressMode[0] = cudaAddressModeClamp;
-    texRef.addressMode[1] = cudaAddressModeClamp;
-    texRef.filterMode = cudaFilterModePoint;
-    texRef.normalized = false;
-    cudaBindTextureToArray(texRef, cuArray, channelDesc);
+    // Compare a few random pixels between CPU and GPU results
+    int errors_naive = 0;
+    int errors_optimized = 0;
+    int errors_vectorized = 0;
     
-    // Set grid and block dimensions
-    dim3 blockDim(16, 16);
-    dim3 gridDim((dimX + blockDim.x - 1) / blockDim.x, 
-                 (dimY + blockDim.y - 1) / blockDim.y);
+    printf("\nVerifying results (random samples):\n");
+    for (int i = 0; i < 10; i++) {
+        int idx = rand() % (dimX * dimY);
+        if (fabs(h_output_cpu[idx] - h_output_naive[idx]) > 1e-5) errors_naive++;
+        if (fabs(h_output_cpu[idx] - h_output_optimized[idx]) > 1e-5) errors_optimized++;
+        if (fabs(h_output_cpu[idx] - h_output_vectorized[idx]) > 1e-5) errors_vectorized++;
+        
+        printf("Pixel %d: CPU=%.6f, Naive=%.6f, Optimized=%.6f, Vectorized=%.6f\n",
+               idx, h_output_cpu[idx], h_output_naive[idx], 
+               h_output_optimized[idx], h_output_vectorized[idx]);
+    }
     
-    // Measure performance using the optimized kernel
-    PerformanceMetrics metrics = measurePerformance((void*)optimizedConvolution2D, true,
-                                                   d_input, d_mask, d_output, 
-                                                   dimX, dimY, dimK, dimK,
-                                                   gridDim, blockDim);
+    printf("\nVerification Results:\n");
+    printf("Naive GPU implementation: %s\n", errors_naive == 0 ? "PASSED" : "FAILED");
+    printf("Optimized GPU implementation: %s\n", errors_optimized == 0 ? "PASSED" : "FAILED");
+    printf("Vectorized GPU implementation: %s\n", errors_vectorized == 0 ? "PASSED" : "FAILED");
     
-    printf("Optimized Convolution Performance: %f ms, %f GFLOPS\n", 
-           metrics.executionTime, metrics.gflops);
-
-    // Copy result back to host
-    cudaMemcpy(h_output, d_output, img_size, cudaMemcpyDeviceToHost);
-
-    // Unbind texture
-    cudaUnbindTexture(texRef);
+    // Print performance summary
+    printf("\nPerformance Summary:\n");
+    printf("CPU: %f ms, %f GFLOPS\n", cpu_metrics.executionTime, cpu_metrics.gflops);
+    printf("Naive GPU: %f ms, %f GFLOPS, Speedup: %.2fx\n", 
+           naive_metrics.executionTime, naive_metrics.gflops,
+           cpu_metrics.executionTime / naive_metrics.executionTime);
+    printf("Optimized GPU: %f ms, %f GFLOPS, Speedup: %.2fx\n", 
+           optimized_metrics.executionTime, optimized_metrics.gflops,
+           cpu_metrics.executionTime / optimized_metrics.executionTime);
+    printf("Vectorized GPU: %f ms, %f GFLOPS, Speedup: %.2fx\n", 
+           vectorized_metrics.executionTime, vectorized_metrics.gflops,
+           cpu_metrics.executionTime / vectorized_metrics.executionTime);
     
-    // Free device memory
-    cudaFreeArray(cuArray);
-    cudaFree(d_input);
-    cudaFree(d_output);
-    cudaFree(d_mask);
+    // Free host memory
+    free(h_input);
+    free(h_output_cpu);
+    free(h_output_naive);
+    free(h_output_optimized);
+    free(h_output_vectorized);
+    free(h_mask);
     
-    return metrics;
+    return 0;
 }

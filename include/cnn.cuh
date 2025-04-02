@@ -1,5 +1,5 @@
-#ifndef CNN_NAIVE_CUH
-#define CNN_NAIVE_CUH
+#ifndef CNN_CUH
+#define CNN_CUH
 
 #include <cuda_runtime.h>
 #include <device_launch_parameters.h>
@@ -7,6 +7,38 @@
 
 // Texture reference for 2D image
 texture<float, cudaTextureType2D, cudaReadModeElementType> texRef;
+// CPU implementation of 2D convolution
+void cpuConvolution2D(const float* input, const float* kernel, float* output, 
+                      int imgWidth, int imgHeight, int kernelWidth, int kernelHeight) {
+    int kernelRadiusX = kernelWidth / 2;
+    int kernelRadiusY = kernelHeight / 2;
+    
+    // For each pixel in the output image
+    for (int y = 0; y < imgHeight; ++y) {
+        for (int x = 0; x < imgWidth; ++x) {
+            float sum = 0.0f;
+            
+            // Apply the kernel
+            for (int ky = -kernelRadiusY; ky <= kernelRadiusY; ++ky) {
+                for (int kx = -kernelRadiusX; kx <= kernelRadiusX; ++kx) {
+                    // Handle boundary conditions with clamping
+                    int imgX = std::min(std::max(x + kx, 0), imgWidth - 1);
+                    int imgY = std::min(std::max(y + ky, 0), imgHeight - 1);
+                    
+                    // Get the corresponding kernel value
+                    int kernelX = kx + kernelRadiusX;
+                    int kernelY = ky + kernelRadiusY;
+                    
+                    sum += input[imgY * imgWidth + imgX] * 
+                           kernel[kernelY * kernelWidth + kernelX];
+                }
+            }
+            
+            // Store the result
+            output[y * imgWidth + x] = sum;
+        }
+    }
+}
 
 // Naive convolution kernel
 __global__ void naiveConvolution2D(const float* input, const float* kernel, float* output, int imgWidth, int imgHeight, int kernelWidth, int kernelHeight) {
@@ -196,4 +228,4 @@ __global__ void vectorizedConvolution2D(const float* input, const float* kernel,
     }
 }
 
-#endif // CNN_NAIVE_CUH
+#endif // CNN_CUH
