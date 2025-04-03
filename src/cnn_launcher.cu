@@ -1,4 +1,4 @@
-#include "cnn_launcher.cuh"
+#include "../include/cnn_launcher.cuh"
 #include <cuda_runtime.h>
 #include <stdio.h>
 #include <stdlib.h>
