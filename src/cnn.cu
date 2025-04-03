@@ -7,7 +7,7 @@
 
 // Texture reference for 2D image
 
-extern texture<float, cudaTextureType2D, cudaReadModeElementType> texRef;
+texture<float, cudaTextureType2D, cudaReadModeElementType> texRef;
 
 
 // CPU implementation of 2D convolution
