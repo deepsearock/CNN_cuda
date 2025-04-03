@@ -6,8 +6,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-// Define the texture reference for optimized kernel
-texture<float, cudaTextureType2D, cudaReadModeElementType> texRef;
 
 // CPU performance measurement function
 PerformanceMetrics cnn_cpu(float *h_input, float *h_output, float *h_mask, 
