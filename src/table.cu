@@ -267,10 +267,12 @@ int main(int argc, char **argv) {
     dim3 blockDim(16, 16);
     dim3 gridDim((dimX + blockDim.x - 1) / blockDim.x, (dimY + blockDim.y - 1) / blockDim.y);
     
-    // Open CSV file for writing results.
-    std::ofstream csvFile("results.csv");
+    // Build CSV file name to include image dimensions.
+    std::ostringstream filename;
+    filename << "results_" << dimX << "x" << dimY << ".csv";
+    std::ofstream csvFile(filename.str());
     if (!csvFile.is_open()) {
-        fprintf(stderr, "Error opening results.csv for writing.\n");
+        fprintf(stderr, "Error opening %s for writing.\n", filename.str().c_str());
         return EXIT_FAILURE;
     }
     // Write a comment line with image dimensions.
@@ -426,7 +428,7 @@ int main(int argc, char **argv) {
     }
     
     csvFile.close();
-    printf("All kernels produced correct results. Results written to results.csv\n");
+    printf("All kernels produced correct results. Results written to %s\n", filename.str().c_str());
     
     // Clean up host memory.
     free(h_image);
