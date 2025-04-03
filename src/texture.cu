@@ -33,7 +33,6 @@ __global__ void convolution2DKernel(int *output, int imageWidth, int imageHeight
     
     // Calculate dimensions of shared memory tile (blockDim + halo)
     int sharedWidth = blockDim.x + 2 * maskRadius;
-    int sharedHeight = blockDim.y + 2 * maskRadius;
     
     // Coordinates in shared memory for the central part (offset by maskRadius)
     int shared_x = tx + maskRadius;
@@ -198,9 +197,26 @@ int main(int argc, char **argv) {
     // Calculate the size of shared memory needed for each block.
     int sharedMemSize = (blockDim.x + 2 * maskRadius) * (blockDim.y + 2 * maskRadius) * sizeof(int);
     
+    // Create CUDA events for timing the kernel execution.
+    cudaEvent_t start, stop;
+    CUDA_CHECK(cudaEventCreate(&start));
+    CUDA_CHECK(cudaEventCreate(&stop));
+    
+    // Record the start event.
+    CUDA_CHECK(cudaEventRecord(start, 0));
+    
     // 6. Invoke the convolution kernel.
     convolution2DKernel<<<gridDim, blockDim, sharedMemSize>>>(d_output, dimX, dimY, maskWidth, maskRadius);
-    CUDA_CHECK(cudaDeviceSynchronize());
+    
+    // Record the stop event.
+    CUDA_CHECK(cudaEventRecord(stop, 0));
+    
+    // Wait for the event to complete.
+    CUDA_CHECK(cudaEventSynchronize(stop));
+    
+    // Calculate the elapsed time in milliseconds.
+    float elapsedTime;
+    CUDA_CHECK(cudaEventElapsedTime(&elapsedTime, start, stop));
     
     // Check for any kernel errors.
     CUDA_CHECK(cudaGetLastError());
@@ -232,12 +248,28 @@ int main(int argc, char **argv) {
         printf("Total mismatches: %d\n", errorCount);
     }
     
+    // Calculate performance.
+    // Each pixel performs maskWidth^2 additions and one division.
+    double opsPerPixel = (maskWidth * maskWidth) + 1;
+    double totalOps = imageSize * opsPerPixel;
+    // Convert elapsed time to seconds.
+    double seconds = elapsedTime / 1000.0;
+    double gflops = (totalOps / seconds) / 1e9;
+    
+    // Print execution time and performance.
+    printf("Kernel execution time: %f ms\n", elapsedTime);
+    printf("Performance: %f GFLOPS\n", gflops);
+    
     // (Optional) Print a sample of the GPU output for verification.
     printf("Sample convolution results (GPU):\n");
     for (int i = 0; i < 10; i++) {
         printf("%d ", h_output_gpu[i]);
     }
     printf("\n");
+    
+    // Clean up CUDA events.
+    CUDA_CHECK(cudaEventDestroy(start));
+    CUDA_CHECK(cudaEventDestroy(stop));
     
     // Free host memory.
     free(h_image);
