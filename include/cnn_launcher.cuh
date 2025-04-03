@@ -8,7 +8,7 @@
 #include "utils.cuh"
 
 // Texture reference for optimized kernel
-texture<float, 2, cudaReadModeElementType> texRef;
+extern texture<float, 2, cudaReadModeElementType> texRef;
 // CPU performance measurement function
 PerformanceMetrics cnn_cpu(float *h_input, float *h_output, float *h_mask, int dimX, int dimY, int dimK) {
     PerformanceMetrics metrics;
@@ -118,12 +118,9 @@ PerformanceMetrics cnn_optimized(float *h_input, float *h_output, float *h_mask,
     
     // Measure performance using the optimized kernel
     PerformanceMetrics metrics = measurePerformance((void*)optimizedConvolution2D, true,
-    // Measure performance using the optimized kernel
-    PerformanceMetrics metrics = measurePerformance((void*)optimizedConvolution2D, true,
-                                                   NULL, d_mask, d_output, 
+                                                   nullptr, d_mask, d_output, 
                                                    dimX, dimY, dimK, dimK,
                                                    gridDim, blockDim);
-           metrics.executionTime, metrics.gflops);
 
     // Copy result back to host
     cudaMemcpy(h_output, d_output, img_size, cudaMemcpyDeviceToHost);
@@ -135,9 +132,7 @@ PerformanceMetrics cnn_optimized(float *h_input, float *h_output, float *h_mask,
     cudaFreeArray(cuArray);
     // Free device memory
     cudaFreeArray(cuArray);
-    cudaFree(d_output);
-    cudaFree(d_mask);
-}
+    cudaFreeArray(cuArray);
 
 
 // Function to launch the vectorized convolution kernel
@@ -166,10 +161,10 @@ PerformanceMetrics cnn_vectorized(float *h_input, float *h_output, float *h_mask
                                                    dimX, dimY, dimK, dimK,
                                                    gridDim, blockDim);
     
-    printf("Vectorized Convolution Performance: %f ms, %f GFLOPS\n", 
-           metrics.executionTime, metrics.gflops);
-
-    // Copy result back to host
+    PerformanceMetrics metrics = measurePerformance((void*)vectorizedConvolution2D, true,
+                                                   d_input, d_mask, d_output, 
+                                                   dimX, dimY, dimK, dimK,
+                                                   gridDim, blockDim);
     cudaMemcpy(h_output, d_output, img_size, cudaMemcpyDeviceToHost);
 
     // Free device memory
