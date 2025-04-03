@@ -1,3 +1,6 @@
+#define DEFINE_TEXTURES
+#include "../include/cnn.cuh"
+
 #include "../include/cnn_launcher.cuh"
 #include <cuda_runtime.h>
 #include <stdio.h>

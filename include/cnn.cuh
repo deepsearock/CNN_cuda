@@ -6,7 +6,11 @@
 #include <texture_fetch_functions.h>
 
 // Texture reference for 2D image
+#ifdef DEFINE_TEXTURES
+texture<float, cudaTextureType2D, cudaReadModeElementType> texRef;
+#else
 extern texture<float, cudaTextureType2D, cudaReadModeElementType> texRef;
+#endif
 // CPU implementation of 2D convolution
 void cpuConvolution2D(const float* input, const float* kernel, float* output, 
                       int imgWidth, int imgHeight, int kernelWidth, int kernelHeight) {
