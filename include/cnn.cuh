@@ -22,8 +22,8 @@ void cpuConvolution2D(const float* input, const float* kernel, float* output,
             for (int ky = -kernelRadiusY; ky <= kernelRadiusY; ++ky) {
                 for (int kx = -kernelRadiusX; kx <= kernelRadiusX; ++kx) {
                     // Handle boundary conditions with clamping
-                    int imgX = std::min(std::max(x + kx, 0), imgWidth - 1);
-                    int imgY = std::min(std::max(y + ky, 0), imgHeight - 1);
+                    int imgX = min(max(x + kx, 0), imgWidth - 1);
+                    int imgY = min(max(y + ky, 0), imgHeight - 1);
                     
                     // Get the corresponding kernel value
                     int kernelX = kx + kernelRadiusX;
@@ -76,13 +76,13 @@ __global__ void optimizedConvolution2D(float* output, int imgWidth, int imgHeigh
 
     // Load data into shared memory
     int sharedWidth = blockDim.x + 2 * kernelRadiusX;
-    int sharedHeight = blockDim.y + 2 * kernelRadiusY;
+    // Removed unused variable sharedHeight
 
     int sharedX = threadX + kernelRadiusX;
     int sharedY = threadY + kernelRadiusY;
 
     if (x < imgWidth && y < imgHeight) {
-        sharedMem[sharedY * sharedWidth + sharedX] = tex2D(texRef, x, y);
+        sharedMem[sharedY * sharedWidth + sharedX] = tex2D<float>(texRef, x, y);
     }
 
     // Load halo regions
