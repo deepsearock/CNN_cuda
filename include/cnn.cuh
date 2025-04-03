@@ -5,14 +5,14 @@
 #include <device_launch_parameters.h>
 #include <texture_fetch_functions.h>
 
-// Texture reference declaration
 #ifdef DEFINE_TEXTURES
-// If DEFINE_TEXTURES is defined, this header will define texRef.
+// When DEFINE_TEXTURES is defined, actually define texRef.
 texture<float, cudaTextureType2D, cudaReadModeElementType> texRef;
 #else
-// Otherwise, only declare it.
+// Otherwise, only declare it as extern.
 extern texture<float, cudaTextureType2D, cudaReadModeElementType> texRef;
 #endif
+
 
 // Function prototypes (declarations only)
 void cpuConvolution2D(const float* input, const float* kernel, float* output, 
