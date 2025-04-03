@@ -8,9 +8,6 @@
 #ifdef DEFINE_TEXTURES
 // When DEFINE_TEXTURES is defined, actually define texRef.
 texture<float, cudaTextureType2D, cudaReadModeElementType> texRef;
-#else
-// Otherwise, only declare it as extern.
-extern texture<float, cudaTextureType2D, cudaReadModeElementType> texRef;
 #endif
 
 
