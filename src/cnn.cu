@@ -1,121 +1,173 @@
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
+// This is the header file for this file.
+#include "../include/cnn.cuh"
+#define DEFINE_TEXTURES
+
 #include <cuda_runtime.h>
-#include "../include/cnn_launcher.cuh"
-#include <algorithm> 
+#include <device_launch_parameters.h>
+#include <texture_fetch_functions.h>
 
+// Texture reference for 2D image
+#ifdef DEFINE_TEXTURES
+texture<float, cudaTextureType2D, cudaReadModeElementType> texRef;
+#else
+extern texture<float, cudaTextureType2D, cudaReadModeElementType> texRef;
+#endif
 
-int main(int argc, char** argv) {
-    // Default dimensions
-    int dimX = 1024;
-    int dimY = 1024;
-    int dimK = 3;
+// CPU implementation of 2D convolution
+void cpuConvolution2D(const float* input, const float* kernel, float* output, 
+                      int imgWidth, int imgHeight, int kernelWidth, int kernelHeight) {
+    int kernelRadiusX = kernelWidth / 2;
+    int kernelRadiusY = kernelHeight / 2;
     
-    // Parse command line arguments
-    for (int i = 1; i < argc; i++) {
-        if (strcmp(argv[i], "-i") == 0 && i + 1 < argc) {
-            dimX = atoi(argv[i + 1]);
-            i++;
-        } else if (strcmp(argv[i], "-j") == 0 && i + 1 < argc) {
-            dimY = atoi(argv[i + 1]);
-            i++;
-        } else if (strcmp(argv[i], "-k") == 0 && i + 1 < argc) {
-            dimK = atoi(argv[i + 1]);
-            i++;
+    // For each pixel in the output image
+    for (int y = 0; y < imgHeight; ++y) {
+        for (int x = 0; x < imgWidth; ++x) {
+            float sum = 0.0f;
+            
+            // Apply the kernel
+            for (int ky = -kernelRadiusY; ky <= kernelRadiusY; ++ky) {
+                for (int kx = -kernelRadiusX; kx <= kernelRadiusX; ++kx) {
+                    // Handle boundary conditions with clamping
+                    int imgX = min(max(x + kx, 0), imgWidth - 1);
+                    int imgY = min(max(y + ky, 0), imgHeight - 1);
+                    
+                    // Get the corresponding kernel value
+                    int kernelX = kx + kernelRadiusX;
+                    int kernelY = ky + kernelRadiusY;
+                    
+                    sum += input[imgY * imgWidth + imgX] * 
+                           kernel[kernelY * kernelWidth + kernelX];
+                }
+            }
+            
+            // Store the result
+            output[y * imgWidth + x] = sum;
+        }
+    }
+}
+
+// Naive convolution kernel
+__global__ void naiveConvolution2D(const float* input, const float* kernel, float* output, 
+                                   int imgWidth, int imgHeight, int kernelWidth, int kernelHeight) {
+    int x = blockIdx.x * blockDim.x + threadIdx.x;
+    int y = blockIdx.y * blockDim.y + threadIdx.y;
+
+    if (x < imgWidth && y < imgHeight) {
+        float sum = 0.0f;
+        int kernelRadiusX = kernelWidth / 2;
+        int kernelRadiusY = kernelHeight / 2;
+
+        for (int ky = -kernelRadiusY; ky <= kernelRadiusY; ++ky) {
+            for (int kx = -kernelRadiusX; kx <= kernelRadiusX; ++kx) {
+                int imgX = min(max(x + kx, 0), imgWidth - 1);
+                int imgY = min(max(y + ky, 0), imgHeight - 1);
+                sum += input[imgY * imgWidth + imgX] * 
+                       kernel[(ky + kernelRadiusY) * kernelWidth + (kx + kernelRadiusX)];
+            }
+        }
+        output[y * imgWidth + x] = sum;
+    }
+}
+
+// Optimized convolution kernel using shared memory and texture memory
+__global__ void optimizedConvolution2D(float* output, int imgWidth, int imgHeight, 
+                                       int kernelWidth, int kernelHeight) {
+    extern __shared__ float sharedMem[];
+
+    int x = blockIdx.x * blockDim.x + threadIdx.x;
+    int y = blockIdx.y * blockDim.y + threadIdx.y;
+
+    int threadX = threadIdx.x;
+    int threadY = threadIdx.y;
+
+    int kernelRadiusX = kernelWidth / 2;
+    int kernelRadiusY = kernelHeight / 2;
+
+    // Load data into shared memory
+    int sharedWidth = blockDim.x + 2 * kernelRadiusX;
+    int sharedX = threadX + kernelRadiusX;
+    int sharedY = threadY + kernelRadiusY;
+
+    if (x < imgWidth && y < imgHeight) {
+        sharedMem[sharedY * sharedWidth + sharedX] = tex2D<float>(texRef, x, y);
+    }
+
+    // Load halo regions
+    if (threadX < kernelRadiusX) {
+        if (x >= kernelRadiusX) {
+            sharedMem[sharedY * sharedWidth + threadX] = tex2D(texRef, x - kernelRadiusX, y);
+        }
+        if (x + blockDim.x < imgWidth) {
+            sharedMem[sharedY * sharedWidth + sharedX + blockDim.x] = tex2D(texRef, x + blockDim.x, y);
+        }
+    }
+
+    if (threadY < kernelRadiusY) {
+        if (y >= kernelRadiusY) {
+            sharedMem[threadY * sharedWidth + sharedX] = tex2D(texRef, x, y - kernelRadiusY);
+        }
+        if (y + blockDim.y < imgHeight) {
+            sharedMem[(sharedY + blockDim.y) * sharedWidth + sharedX] = tex2D(texRef, x, y + blockDim.y);
+        }
+    }
+
+    __syncthreads();
+
+    // Perform convolution
+    if (x < imgWidth && y < imgHeight) {
+        float sum = 0.0f;
+        for (int ky = -kernelRadiusY; ky <= kernelRadiusY; ++ky) {
+            for (int kx = -kernelRadiusX; kx <= kernelRadiusX; ++kx) {
+                sum += sharedMem[(sharedY + ky) * sharedWidth + (sharedX + kx)];
+            }
+        }
+        output[y * imgWidth + x] = sum;
+    }
+}
+
+// Convolution kernel using shared memory and vectorized memory loads without textures
+__global__ void vectorizedConvolution2D(const float* input, const float* kernel, float* output, 
+                                        int imgWidth, int imgHeight, int kernelWidth, int kernelHeight) {
+    extern __shared__ float sharedMem[];
+    
+    int tx = threadIdx.x;
+    int ty = threadIdx.y;
+    int x = blockIdx.x * blockDim.x + tx;
+    int y = blockIdx.y * blockDim.y + ty;
+    
+    int kernelRadiusX = kernelWidth / 2;
+    int kernelRadiusY = kernelHeight / 2;
+    
+    int sharedWidth = blockDim.x + 2 * kernelRadiusX;
+    
+    // Load central region to shared memory
+    if (y < imgHeight && x < imgWidth) {
+        sharedMem[(ty + kernelRadiusY) * sharedWidth + (tx + kernelRadiusX)] = input[y * imgWidth + x];
+    }
+    
+    // Load halo regions
+    if (ty < kernelRadiusY) {
+        // Top halo
+        int loadY = (blockIdx.y * blockDim.y) - kernelRadiusY + ty;
+        if (loadY >= 0 && x < imgWidth) {
+            sharedMem[ty * sharedWidth + (tx + kernelRadiusX)] = input[loadY * imgWidth + x];
+        } else {
+            sharedMem[ty * sharedWidth + (tx + kernelRadiusX)] = 0.0f;
+        }
+        
+        // Bottom halo
+        loadY = (blockIdx.y + 1) * blockDim.y + ty;
+        if (loadY < imgHeight && x < imgWidth) {
+            sharedMem[(blockDim.y + kernelRadiusY + ty) * sharedWidth + (tx + kernelRadiusX)] = input[loadY * imgWidth + x];
+        } else {
+            sharedMem[(blockDim.y + kernelRadiusY + ty) * sharedWidth + (tx + kernelRadiusX)] = 0.0f;
         }
     }
     
-    printf("Running 2D Convolution with image size: %d x %d, mask size: %d x %d\n", 
-           dimX, dimY, dimK, dimK);
-    
-    // Allocate host memory
-    size_t img_size = dimX * dimY * sizeof(float);
-    size_t mask_size = dimK * dimK * sizeof(float);
-    
-    float *h_input = (float*)malloc(img_size);
-    float *h_output_cpu = (float*)malloc(img_size);
-    float *h_output_naive = (float*)malloc(img_size);
-    float *h_output_optimized = (float*)malloc(img_size);
-    float *h_output_vectorized = (float*)malloc(img_size);
-    float *h_mask = (float*)malloc(mask_size);
-    
-    if (!h_input || !h_output_cpu || !h_output_naive || 
-        !h_output_optimized || !h_output_vectorized || !h_mask) {
-        fprintf(stderr, "Failed to allocate host memory!\n");
-        return -1;
-    }
-    
-    // Initialize random number generator
-    srand(time(NULL));
-    
-    // Generate random input data (0-15)
-    for (int i = 0; i < dimX * dimY; i++) {
-        h_input[i] = static_cast<float>(rand() % 16);
-    }
-    
-    for (int i = 0; i < dimK * dimK; i++) {
-        h_mask[i] = static_cast<float>(rand() % 16);
-    }
-    
-    // Run CPU convolution
-    printf("\nRunning CPU implementation...\n");
-    PerformanceMetrics cpu_metrics = cnn_cpu(h_input, h_output_cpu, h_mask, dimX, dimY, dimK);
-    
-    // Run naive GPU convolution
-    printf("\nRunning naive GPU implementation...\n");
-    PerformanceMetrics naive_metrics = cnn_naive(h_input, h_output_naive, h_mask, dimX, dimY, dimK);
-    
-    // Run optimized GPU convolution
-    printf("\nRunning optimized GPU implementation...\n");
-    PerformanceMetrics optimized_metrics = cnn_optimized(h_input, h_output_optimized, h_mask, dimX, dimY, dimK);
-    
-    // Run vectorized GPU convolution
-    printf("\nRunning vectorized GPU implementation...\n");
-    PerformanceMetrics vectorized_metrics = cnn_vectorized(h_input, h_output_vectorized, h_mask, dimX, dimY, dimK);
-    
-    // Compare a few random pixels between CPU and GPU results
-    int errors_naive = 0;
-    int errors_optimized = 0;
-    int errors_vectorized = 0;
-    
-    printf("\nVerifying results (random samples):\n");
-    for (int i = 0; i < 10; i++) {
-        int idx = rand() % (dimX * dimY);
-        if (fabs(h_output_cpu[idx] - h_output_naive[idx]) > 1e-5) errors_naive++;
-        if (fabs(h_output_cpu[idx] - h_output_optimized[idx]) > 1e-5) errors_optimized++;
-        if (fabs(h_output_cpu[idx] - h_output_vectorized[idx]) > 1e-5) errors_vectorized++;
-        
-        printf("Pixel %d: CPU=%.6f, Naive=%.6f, Optimized=%.6f, Vectorized=%.6f\n",
-               idx, h_output_cpu[idx], h_output_naive[idx], 
-               h_output_optimized[idx], h_output_vectorized[idx]);
-    }
-    
-    printf("\nVerification Results:\n");
-    printf("Naive GPU implementation: %s\n", errors_naive == 0 ? "PASSED" : "FAILED");
-    printf("Optimized GPU implementation: %s\n", errors_optimized == 0 ? "PASSED" : "FAILED");
-    printf("Vectorized GPU implementation: %s\n", errors_vectorized == 0 ? "PASSED" : "FAILED");
-    
-    // Print performance summary
-    printf("\nPerformance Summary:\n");
-    printf("CPU: %f ms, %f GFLOPS\n", cpu_metrics.executionTime, cpu_metrics.gflops);
-    printf("Naive GPU: %f ms, %f GFLOPS, Speedup: %.2fx\n", 
-           naive_metrics.executionTime, naive_metrics.gflops,
-           cpu_metrics.executionTime / naive_metrics.executionTime);
-    printf("Optimized GPU: %f ms, %f GFLOPS, Speedup: %.2fx\n", 
-           optimized_metrics.executionTime, optimized_metrics.gflops,
-           cpu_metrics.executionTime / optimized_metrics.executionTime);
-    printf("Vectorized GPU: %f ms, %f GFLOPS, Speedup: %.2fx\n", 
-           vectorized_metrics.executionTime, vectorized_metrics.gflops,
-           cpu_metrics.executionTime / vectorized_metrics.executionTime);
-    
-    // Free host memory
-    free(h_input);
-    free(h_output_cpu);
-    free(h_output_naive);
-    free(h_output_optimized);
-    free(h_output_vectorized);
-    free(h_mask);
-    
-    return 0;
-}
+    if (tx < kernelRadiusX) {
+        // Left halo
+        int loadX = (blockIdx.x * blockDim.x) - kernelRadiusX + tx;
+        if (loadX >= 0 && y < imgHeight) {
+            sharedMem[(ty + kernelRadiusY) * sharedWidth + tx] = input[y * imgWidth + loadX];
+        } else {
+            sharedMem[(ty + kernelRadiusY) * sharedWidth + tx] = 0.0f*
