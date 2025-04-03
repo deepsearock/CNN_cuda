@@ -1,5 +1,4 @@
 // Define this macro so that the texture reference is defined in this file.
-#define DEFINE_TEXTURES
 
 #include "../include/cnn.cuh"
 #include <cuda_runtime.h>
@@ -7,11 +6,9 @@
 #include <texture_fetch_functions.h>
 
 // Texture reference for 2D image
-#ifdef DEFINE_TEXTURES
-texture<float, cudaTextureType2D, cudaReadModeElementType> texRef;
-#else
+
 extern texture<float, cudaTextureType2D, cudaReadModeElementType> texRef;
-#endif
+
 
 // CPU implementation of 2D convolution
 void cpuConvolution2D(const float* input, const float* kernel, float* output, 
