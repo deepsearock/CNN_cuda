@@ -1,5 +1,6 @@
 // Define this macro so that the texture reference is defined in this file.
 // Place this at the very top!
+#define DEFINE_TEXTURES
 #include "../include/cnn.cuh"
 #include <cuda_runtime.h>
 #include <device_launch_parameters.h>
