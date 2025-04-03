@@ -4,6 +4,7 @@
 #include <cuda_runtime.h>
 #include <cuda.h>
 #include <math.h>
+#include <chrono>
 
 // Macro for error checking
 #define CUDA_CHECK(call) {                                              \
@@ -15,63 +16,53 @@
     }                                                                   \
 }
 
-// Declare a texture reference for the input image
+// Declare a texture reference for the optimized kernel
 texture<int, cudaTextureType2D, cudaReadModeElementType> texRef;
 
-// Convolution kernel using texture and shared memory
+//======================================================
+// 1. Optimized GPU Convolution Kernel (Texture & Shared Memory)
+//======================================================
 __global__ void convolution2DKernel(int *output, int imageWidth, int imageHeight, int maskWidth, int maskRadius) {
-    // Dynamically allocated shared memory for the image tile including halos.
     extern __shared__ int sharedMem[];
     
-    // Thread indices in the block
     int tx = threadIdx.x;
     int ty = threadIdx.y;
     
-    // Global pixel coordinates
     int col = blockIdx.x * blockDim.x + tx;
     int row = blockIdx.y * blockDim.y + ty;
     
-    // Calculate dimensions of shared memory tile (blockDim + halo)
     int sharedWidth = blockDim.x + 2 * maskRadius;
-    
-    // Coordinates in shared memory for the central part (offset by maskRadius)
     int shared_x = tx + maskRadius;
     int shared_y = ty + maskRadius;
     
-    // 1. Load the central data into shared memory from texture memory.
-    if (row < imageHeight && col < imageWidth) {
+    // Load central data from texture memory
+    if (row < imageHeight && col < imageWidth)
         sharedMem[shared_y * sharedWidth + shared_x] = tex2D(texRef, col, row);
-    } else {
+    else
         sharedMem[shared_y * sharedWidth + shared_x] = 0;
-    }
     
-    // 2. Load halo regions.
-    // Left halo
+    // Load halo regions (left, right, top, bottom, and corners)
     if (tx < maskRadius) {
         int halo_col = col - maskRadius;
         int value = (halo_col >= 0 && row < imageHeight) ? tex2D(texRef, halo_col, row) : 0;
         sharedMem[shared_y * sharedWidth + tx] = value;
     }
-    // Right halo
     if (tx >= blockDim.x - maskRadius) {
         int halo_col = col + maskRadius;
         int value = (halo_col < imageWidth && row < imageHeight) ? tex2D(texRef, halo_col, row) : 0;
         sharedMem[shared_y * sharedWidth + shared_x + maskRadius] = value;
     }
-    // Top halo
     if (ty < maskRadius) {
         int halo_row = row - maskRadius;
         int value = (halo_row >= 0 && col < imageWidth) ? tex2D(texRef, col, halo_row) : 0;
         sharedMem[ty * sharedWidth + shared_x] = value;
     }
-    // Bottom halo
     if (ty >= blockDim.y - maskRadius) {
         int halo_row = row + maskRadius;
         int value = (halo_row < imageHeight && col < imageWidth) ? tex2D(texRef, col, halo_row) : 0;
         sharedMem[(shared_y + maskRadius) * sharedWidth + shared_x] = value;
     }
-    
-    // Corner halos: top-left, top-right, bottom-left, bottom-right
+    // Corner halos:
     if (tx < maskRadius && ty < maskRadius) {
         int halo_col = col - maskRadius;
         int halo_row = row - maskRadius;
@@ -99,30 +90,51 @@ __global__ void convolution2DKernel(int *output, int imageWidth, int imageHeight
     
     __syncthreads();
     
-    // 3. Apply the convolution operation using the shared memory tile.
+    // Convolution operation using shared memory tile
     if (row < imageHeight && col < imageWidth) {
         int output_value = 0;
-        // Iterate over the convolution mask.
         for (int i = -maskRadius; i <= maskRadius; i++) {
             for (int j = -maskRadius; j <= maskRadius; j++) {
                 int image_value = sharedMem[(shared_y + i) * sharedWidth + (shared_x + j)];
                 output_value += image_value;
             }
         }
-        // For an averaging filter, divide by the area of the mask.
         output_value /= ((2 * maskRadius + 1) * (2 * maskRadius + 1));
         output[row * imageWidth + col] = output_value;
     }
 }
 
-// CPU implementation of the 2D convolution
+//======================================================
+// 2. Naive GPU Convolution Kernel (Global Memory Only)
+//======================================================
+__global__ void naiveConvolutionKernel(int *input, int *output, int imageWidth, int imageHeight, int maskWidth, int maskRadius) {
+    int col = blockIdx.x * blockDim.x + threadIdx.x;
+    int row = blockIdx.y * blockDim.y + threadIdx.y;
+    
+    if (row < imageHeight && col < imageWidth) {
+        int sum = 0;
+        for (int i = -maskRadius; i <= maskRadius; i++) {
+            for (int j = -maskRadius; j <= maskRadius; j++) {
+                int r = row + i;
+                int c = col + j;
+                int value = 0;
+                if (r >= 0 && r < imageHeight && c >= 0 && c < imageWidth)
+                    value = input[r * imageWidth + c];
+                sum += value;
+            }
+        }
+        output[row * imageWidth + col] = sum / ((2 * maskRadius + 1) * (2 * maskRadius + 1));
+    }
+}
+
+//======================================================
+// 3. CPU Convolution Implementation
+//======================================================
 void convolution2D_CPU(const int *h_image, int *h_output, int imageWidth, int imageHeight, int maskWidth) {
     int maskRadius = maskWidth / 2;
-    // Loop over every pixel in the image
     for (int row = 0; row < imageHeight; row++) {
         for (int col = 0; col < imageWidth; col++) {
             int sum = 0;
-            // Loop over the mask
             for (int i = -maskRadius; i <= maskRadius; i++) {
                 for (int j = -maskRadius; j <= maskRadius; j++) {
                     int curRow = row + i;
@@ -133,17 +145,14 @@ void convolution2D_CPU(const int *h_image, int *h_output, int imageWidth, int im
                     sum += value;
                 }
             }
-            // Average the sum over the mask area
             h_output[row * imageWidth + col] = sum / ((2 * maskRadius + 1) * (2 * maskRadius + 1));
         }
     }
 }
 
 int main(int argc, char **argv) {
-    // Set default dimensions: 512x512 image with a 3x3 mask.
+    // Default dimensions: 512x512 image with a 3x3 mask.
     int dimX = 512, dimY = 512, dimK = 3;
-    
-    // Parse command-line arguments: -i <dimX> -j <dimY> -k <dimK>
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-i") == 0)
             dimX = atoi(argv[++i]);
@@ -153,127 +162,174 @@ int main(int argc, char **argv) {
             dimK = atoi(argv[++i]);
     }
     
-    // Compute total number of pixels in the image.
     int imageSize = dimX * dimY;
     
-    // Allocate host memory for the image and the outputs.
-    int *h_image = (int *)malloc(sizeof(int) * imageSize);
-    int *h_output_gpu = (int *)malloc(sizeof(int) * imageSize);
-    int *h_output_cpu = (int *)malloc(sizeof(int) * imageSize);
+    // Allocate host memory for image and results.
+    int *h_image       = (int *)malloc(sizeof(int) * imageSize);
+    int *h_output_gpu  = (int *)malloc(sizeof(int) * imageSize); // optimized GPU
+    int *h_output_naive= (int *)malloc(sizeof(int) * imageSize); // naive GPU
+    int *h_output_cpu  = (int *)malloc(sizeof(int) * imageSize); // CPU result
     
-    // Randomly generate pixel values between 0 and 15.
+    // Random image values between 0 and 15.
     for (int i = 0; i < imageSize; i++) {
         h_image[i] = rand() % 16;
     }
     
-    // Define mask parameters.
     int maskWidth = dimK;
     int maskRadius = maskWidth / 2;
     
-    // 1. Allocate device memory for the image as a CUDA array (to be used for texture binding).
+    //======================================================
+    // Optimized GPU Convolution (Texture + Shared Memory)
+    //======================================================
+    
+    // Allocate device CUDA array for image (for texture binding).
     cudaArray *d_imageArray;
     cudaChannelFormatDesc channelDesc = cudaCreateChannelDesc<int>();
     CUDA_CHECK(cudaMallocArray(&d_imageArray, &channelDesc, dimX, dimY));
     
-    // 2. Copy host image to the CUDA array (device memory).
     CUDA_CHECK(cudaMemcpy2DToArray(d_imageArray, 0, 0, h_image, dimX * sizeof(int),
                                    dimX * sizeof(int), dimY, cudaMemcpyHostToDevice));
     
-    // 3. Bind the CUDA array to the texture reference.
+    // Bind texture.
     texRef.addressMode[0] = cudaAddressModeClamp;
     texRef.addressMode[1] = cudaAddressModeClamp;
-    texRef.filterMode = cudaFilterModePoint;
-    texRef.normalized = false;
+    texRef.filterMode     = cudaFilterModePoint;
+    texRef.normalized     = false;
     CUDA_CHECK(cudaBindTextureToArray(texRef, d_imageArray, channelDesc));
     
-    // 4. Allocate device memory for the output.
+    // Allocate device memory for optimized output.
     int *d_output;
     CUDA_CHECK(cudaMalloc(&d_output, sizeof(int) * imageSize));
     
-    // 5. Set up thread block and grid dimensions.
     dim3 blockDim(16, 16);
     dim3 gridDim((dimX + blockDim.x - 1) / blockDim.x, (dimY + blockDim.y - 1) / blockDim.y);
-    
-    // Calculate the size of shared memory needed for each block.
     int sharedMemSize = (blockDim.x + 2 * maskRadius) * (blockDim.y + 2 * maskRadius) * sizeof(int);
     
-    // Create CUDA events for timing the kernel execution.
+    // Create CUDA events for timing.
     cudaEvent_t start, stop;
     CUDA_CHECK(cudaEventCreate(&start));
     CUDA_CHECK(cudaEventCreate(&stop));
     
-    // Record the start event.
     CUDA_CHECK(cudaEventRecord(start, 0));
-    
-    // 6. Invoke the convolution kernel.
     convolution2DKernel<<<gridDim, blockDim, sharedMemSize>>>(d_output, dimX, dimY, maskWidth, maskRadius);
-    
-    // Record the stop event.
     CUDA_CHECK(cudaEventRecord(stop, 0));
-    
-    // Wait for the event to complete.
     CUDA_CHECK(cudaEventSynchronize(stop));
     
-    // Calculate the elapsed time in milliseconds.
-    float elapsedTime;
-    CUDA_CHECK(cudaEventElapsedTime(&elapsedTime, start, stop));
-    
-    // Check for any kernel errors.
+    float elapsedTime_gpu;
+    CUDA_CHECK(cudaEventElapsedTime(&elapsedTime_gpu, start, stop));
     CUDA_CHECK(cudaGetLastError());
     
-    // 7. Copy the results from device to host.
     CUDA_CHECK(cudaMemcpy(h_output_gpu, d_output, sizeof(int) * imageSize, cudaMemcpyDeviceToHost));
     
-    // 8. Clean up: Unbind texture and free device memory.
     CUDA_CHECK(cudaUnbindTexture(texRef));
     CUDA_CHECK(cudaFreeArray(d_imageArray));
     CUDA_CHECK(cudaFree(d_output));
     
-    // Compute CPU convolution for comparison.
-    convolution2D_CPU(h_image, h_output_cpu, dimX, dimY, maskWidth);
+    //======================================================
+    // Naive GPU Convolution (Global Memory Only)
+    //======================================================
     
-    // Compare GPU and CPU results.
+    // Allocate device memory for input and output.
+    int *d_input, *d_output_naive;
+    CUDA_CHECK(cudaMalloc(&d_input, sizeof(int) * imageSize));
+    CUDA_CHECK(cudaMalloc(&d_output_naive, sizeof(int) * imageSize));
+    
+    CUDA_CHECK(cudaMemcpy(d_input, h_image, sizeof(int) * imageSize, cudaMemcpyHostToDevice));
+    
+    cudaEvent_t startNaive, stopNaive;
+    CUDA_CHECK(cudaEventCreate(&startNaive));
+    CUDA_CHECK(cudaEventCreate(&stopNaive));
+    
+    CUDA_CHECK(cudaEventRecord(startNaive, 0));
+    naiveConvolutionKernel<<<gridDim, blockDim>>>(d_input, d_output_naive, dimX, dimY, maskWidth, maskRadius);
+    CUDA_CHECK(cudaEventRecord(stopNaive, 0));
+    CUDA_CHECK(cudaEventSynchronize(stopNaive));
+    
+    float elapsedTime_naive;
+    CUDA_CHECK(cudaEventElapsedTime(&elapsedTime_naive, startNaive, stopNaive));
+    CUDA_CHECK(cudaGetLastError());
+    
+    CUDA_CHECK(cudaMemcpy(h_output_naive, d_output_naive, sizeof(int) * imageSize, cudaMemcpyDeviceToHost));
+    
+    CUDA_CHECK(cudaFree(d_input));
+    CUDA_CHECK(cudaFree(d_output_naive));
+    
+    //======================================================
+    // CPU Convolution
+    //======================================================
+    auto cpu_start = std::chrono::high_resolution_clock::now();
+    convolution2D_CPU(h_image, h_output_cpu, dimX, dimY, maskWidth);
+    auto cpu_end = std::chrono::high_resolution_clock::now();
+    std::chrono::duration<double, std::milli> elapsedTime_cpu = cpu_end - cpu_start;
+    
+    //======================================================
+    // Compare Results (Optimized & Naive GPU vs CPU)
+    //======================================================
     int errorCount = 0;
     for (int i = 0; i < imageSize; i++) {
         if (abs(h_output_gpu[i] - h_output_cpu[i]) > 1e-5) {
             errorCount++;
             if (errorCount < 10) {
-                printf("Mismatch at index %d: GPU = %d, CPU = %d\n", i, h_output_gpu[i], h_output_cpu[i]);
+                printf("Optimized GPU mismatch at index %d: GPU = %d, CPU = %d\n", i, h_output_gpu[i], h_output_cpu[i]);
             }
         }
     }
-    if (errorCount == 0) {
-        printf("GPU and CPU results match.\n");
-    } else {
-        printf("Total mismatches: %d\n", errorCount);
-    }
+    if (errorCount == 0)
+        printf("Optimized GPU and CPU results match.\n");
+    else
+        printf("Total mismatches (Optimized GPU vs CPU): %d\n", errorCount);
     
-    // Calculate performance.
-    // Each pixel performs maskWidth^2 additions and one division.
+    errorCount = 0;
+    for (int i = 0; i < imageSize; i++) {
+        if (abs(h_output_naive[i] - h_output_cpu[i]) > 1e-5) {
+            errorCount++;
+            if (errorCount < 10) {
+                printf("Naive GPU mismatch at index %d: GPU = %d, CPU = %d\n", i, h_output_naive[i], h_output_cpu[i]);
+            }
+        }
+    }
+    if (errorCount == 0)
+        printf("Naive GPU and CPU results match.\n");
+    else
+        printf("Total mismatches (Naive GPU vs CPU): %d\n", errorCount);
+    
+    //======================================================
+    // Performance Calculations
+    //======================================================
     double opsPerPixel = (maskWidth * maskWidth) + 1;
     double totalOps = imageSize * opsPerPixel;
-    // Convert elapsed time to seconds.
-    double seconds = elapsedTime / 1000.0;
-    double gflops = (totalOps / seconds) / 1e9;
     
-    // Print execution time and performance.
-    printf("Kernel execution time: %f ms\n", elapsedTime);
-    printf("Performance: %f GFLOPS\n", gflops);
+    double seconds_gpu   = elapsedTime_gpu / 1000.0;
+    double gflops_gpu    = (totalOps / seconds_gpu) / 1e9;
     
-    // (Optional) Print a sample of the GPU output for verification.
-    printf("Sample convolution results (GPU):\n");
-    for (int i = 0; i < 10; i++) {
-        printf("%d ", h_output_gpu[i]);
-    }
+    double seconds_naive = elapsedTime_naive / 1000.0;
+    double gflops_naive  = (totalOps / seconds_naive) / 1e9;
+    
+    double seconds_cpu   = elapsedTime_cpu.count() / 1000.0;
+    double gflops_cpu    = (totalOps / seconds_cpu) / 1e9;
+    
+    printf("Optimized GPU kernel execution time: %f ms, Performance: %f GFLOPS\n", elapsedTime_gpu, gflops_gpu);
+    printf("Naive GPU kernel execution time: %f ms, Performance: %f GFLOPS\n", elapsedTime_naive, gflops_naive);
+    printf("CPU execution time: %f ms, Performance: %f GFLOPS\n", elapsedTime_cpu.count(), gflops_cpu);
+    
+    // (Optional) Print a sample of each output.
+    printf("Sample output (Optimized GPU):\n");
+    for (int i = 0; i < 10; i++) printf("%d ", h_output_gpu[i]);
+    printf("\n");
+    
+    printf("Sample output (Naive GPU):\n");
+    for (int i = 0; i < 10; i++) printf("%d ", h_output_naive[i]);
     printf("\n");
     
     // Clean up CUDA events.
     CUDA_CHECK(cudaEventDestroy(start));
     CUDA_CHECK(cudaEventDestroy(stop));
+    CUDA_CHECK(cudaEventDestroy(startNaive));
+    CUDA_CHECK(cudaEventDestroy(stopNaive));
     
-    // Free host memory.
     free(h_image);
     free(h_output_gpu);
+    free(h_output_naive);
     free(h_output_cpu);
     
     return 0;
