@@ -7,7 +7,8 @@
 
 // Typedefs for kernel function pointers
 typedef void (*NaiveKernelFunc)(const float*, const float*, float*, int, int, int, int);
-typedef void (*OptimizedKernelFunc)(float*, int, int, int, int);
+typedef void (*OptimizedKernelFunc)(const float*, float*, int, int, int, int);
+
 
 // Structure to hold performance metrics
 struct PerformanceMetrics {
@@ -60,7 +61,7 @@ inline PerformanceMetrics measurePerformance(void* kernelFunc, KernelType kernel
     // Warm-up run (to avoid first-run overhead)
     if (kernelType == OPTIMIZED) {
         OptimizedKernelFunc func = (OptimizedKernelFunc)kernelFunc;
-        func<<<gridDim, blockDim, sharedMemSize>>>(d_output, imgWidth, imgHeight, kernelWidth, kernelHeight);
+    func<<<gridDim, blockDim, sharedMemSize>>>(d_kernel, d_output, imgWidth, imgHeight, kernelWidth, kernelHeight);
     } else {
         NaiveKernelFunc func = (NaiveKernelFunc)kernelFunc;
         func<<<gridDim, blockDim, (kernelType == VECTORIZED) ? sharedMemSize : 0>>>(
@@ -75,7 +76,7 @@ inline PerformanceMetrics measurePerformance(void* kernelFunc, KernelType kernel
     for (int i = 0; i < iterations; i++) {
         if (kernelType == OPTIMIZED) {
             OptimizedKernelFunc func = (OptimizedKernelFunc)kernelFunc;
-            func<<<gridDim, blockDim, sharedMemSize>>>(d_output, imgWidth, imgHeight, kernelWidth, kernelHeight);
+    func<<<gridDim, blockDim, sharedMemSize>>>(d_kernel, d_output, imgWidth, imgHeight, kernelWidth, kernelHeight);
         } else {
             NaiveKernelFunc func = (NaiveKernelFunc)kernelFunc;
             func<<<gridDim, blockDim, (kernelType == VECTORIZED) ? sharedMemSize : 0>>>(

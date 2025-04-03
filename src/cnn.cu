@@ -43,71 +43,51 @@ void cpuConvolution2D(const float* input, const float* kernel, float* output,
 }
 
 // Naive convolution kernel
-__global__ void naiveConvolution2D(const float* input, const float* kernel, float* output, 
-                                   int imgWidth, int imgHeight, int kernelWidth, int kernelHeight) {
-    int x = blockIdx.x * blockDim.x + threadIdx.x;
-    int y = blockIdx.y * blockDim.y + threadIdx.y;
-
-    if (x < imgWidth && y < imgHeight) {
-        float sum = 0.0f;
-        int kernelRadiusX = kernelWidth / 2;
-        int kernelRadiusY = kernelHeight / 2;
-
-        for (int ky = -kernelRadiusY; ky <= kernelRadiusY; ++ky) {
-            for (int kx = -kernelRadiusX; kx <= kernelRadiusX; ++kx) {
-                int imgX = min(max(x + kx, 0), imgWidth - 1);
-                int imgY = min(max(y + ky, 0), imgHeight - 1);
-                sum += input[imgY * imgWidth + imgX] * 
-                       kernel[(ky + kernelRadiusY) * kernelWidth + (kx + kernelRadiusX)];
-            }
-        }
-        output[y * imgWidth + x] = sum;
-    }
-}
-
-// Optimized convolution kernel using shared memory and texture memory
-__global__ void optimizedConvolution2D(float* output, int imgWidth, int imgHeight, 
+__global__ void optimizedConvolution2D(const float* mask, float* output,
+    int imgWidth, int imgHeight, 
     int kernelWidth, int kernelHeight) {
 extern __shared__ float sharedMem[];
 
-int blockWidth  = blockDim.x;
-int blockHeight = blockDim.y;
+// Compute block dimensions and kernel radii.
+const int blockWidth  = blockDim.x;
+const int blockHeight = blockDim.y;
 int kernelRadiusX = kernelWidth / 2;
 int kernelRadiusY = kernelHeight / 2;
 
-// Dimensions of the shared memory tile
-int sharedWidth  = blockWidth  + 2 * kernelRadiusX;
+// Dimensions of the shared memory tile (central block + halo)
+int sharedWidth  = blockWidth + 2 * kernelRadiusX;
 int sharedHeight = blockHeight + 2 * kernelRadiusY;
 
-// Compute the global coordinates of the top-left corner of the tile (including halo)
+// Global coordinates of the top-left corner of the tile (including halo)
 int x0 = blockIdx.x * blockWidth - kernelRadiusX;
 int y0 = blockIdx.y * blockHeight - kernelRadiusY;
 
-// Load the tile into shared memory cooperatively.
-// Each thread loads multiple elements if necessary.
+// Cooperative loading: each thread loads parts of the tile
 for (int j = threadIdx.y; j < sharedHeight; j += blockHeight) {
 for (int i = threadIdx.x; i < sharedWidth; i += blockWidth) {
 int globalX = x0 + i;
 int globalY = y0 + j;
-// tex2D will use the texture's addressing mode (e.g., clamp) to handle boundaries.
+// Use texture fetch; the texture's addressing mode (clamp) handles out-of-bound accesses.
 sharedMem[j * sharedWidth + i] = tex2D<float>(texRef, globalX, globalY);
 }
 }
-
 __syncthreads();
 
-// Now, each thread computes the convolution for one output pixel.
+// Compute the output pixel coordinate.
 int x = blockIdx.x * blockWidth + threadIdx.x;
 int y = blockIdx.y * blockHeight + threadIdx.y;
 
 if (x < imgWidth && y < imgHeight) {
 float sum = 0.0f;
-// The top-left index of the convolution window in shared memory is offset by kernel radii.
-int smemX = threadIdx.x;
-int smemY = threadIdx.y;
-for (int j = 0; j < kernelHeight; j++) {
-for (int i = 0; i < kernelWidth; i++) {
-sum += sharedMem[(smemY + j) * sharedWidth + (smemX + i)];
+// Each thread’s corresponding position in shared memory
+int smemX = threadIdx.x + kernelRadiusX;
+int smemY = threadIdx.y + kernelRadiusY;
+// Loop over the kernel window.
+for (int ky = 0; ky < kernelHeight; ky++) {
+for (int kx = 0; kx < kernelWidth; kx++) {
+float imgVal = sharedMem[(smemY - kernelRadiusY + ky) * sharedWidth + (smemX - kernelRadiusX + kx)];
+float maskVal = mask[ky * kernelWidth + kx];
+sum += imgVal * maskVal;
 }
 }
 output[y * imgWidth + x] = sum;
@@ -115,104 +95,51 @@ output[y * imgWidth + x] = sum;
 }
 
 
+
+
 // Convolution kernel using shared memory and vectorized memory loads without textures
 __global__ void vectorizedConvolution2D(const float* input, const float* kernel, float* output, 
-                                        int imgWidth, int imgHeight, int kernelWidth, int kernelHeight) {
-    extern __shared__ float sharedMem[];
-    
-    int tx = threadIdx.x;
-    int ty = threadIdx.y;
-    int x = blockIdx.x * blockDim.x + tx;
-    int y = blockIdx.y * blockDim.y + ty;
-    
-    int kernelRadiusX = kernelWidth / 2;
-    int kernelRadiusY = kernelHeight / 2;
-    
-    int sharedWidth = blockDim.x + 2 * kernelRadiusX;
-    
-    // Load central region to shared memory
-    if (y < imgHeight && x < imgWidth) {
-        sharedMem[(ty + kernelRadiusY) * sharedWidth + (tx + kernelRadiusX)] = input[y * imgWidth + x];
-    }
-    
-    // Load halo regions along Y direction
-    if (ty < kernelRadiusY) {
-        int loadY = (blockIdx.y * blockDim.y) - kernelRadiusY + ty;
-        if (loadY >= 0 && x < imgWidth) {
-            sharedMem[ty * sharedWidth + (tx + kernelRadiusX)] = input[loadY * imgWidth + x];
-        } else {
-            sharedMem[ty * sharedWidth + (tx + kernelRadiusX)] = 0.0f;
-        }
-        
-        loadY = (blockIdx.y + 1) * blockDim.y + ty;
-        if (loadY < imgHeight && x < imgWidth) {
-            sharedMem[(blockDim.y + kernelRadiusY + ty) * sharedWidth + (tx + kernelRadiusX)] = input[loadY * imgWidth + x];
-        } else {
-            sharedMem[(blockDim.y + kernelRadiusY + ty) * sharedWidth + (tx + kernelRadiusX)] = 0.0f;
-        }
-    }
-    
-    // Load halo regions along X direction
-    if (tx < kernelRadiusX) {
-        int loadX = (blockIdx.x * blockDim.x) - kernelRadiusX + tx;
-        if (loadX >= 0 && y < imgHeight) {
-            sharedMem[(ty + kernelRadiusY) * sharedWidth + tx] = input[y * imgWidth + loadX];
-        } else {
-            sharedMem[(ty + kernelRadiusY) * sharedWidth + tx] = 0.0f;
-        }
-        
-        loadX = (blockIdx.x + 1) * blockDim.x + tx;
-        if (loadX < imgWidth && y < imgHeight) {
-            sharedMem[(ty + kernelRadiusY) * sharedWidth + (blockDim.x + kernelRadiusX + tx)] = input[y * imgWidth + loadX];
-        } else {
-            sharedMem[(ty + kernelRadiusY) * sharedWidth + (blockDim.x + kernelRadiusX + tx)] = 0.0f;
-        }
-    }
-    
-    __syncthreads();
-    
-    // Perform convolution with vectorized memory loads
-    if (x < imgWidth && y < imgHeight) {
-        float sum = 0.0f;
-        for (int ky = 0; ky < kernelHeight; ++ky) {
-            int rowOffset = (ty + ky) * sharedWidth + tx;
-            int kernelRowOffset = ky * kernelWidth;
-            
-            int kx = 0;
-            // Use float4 for processing 4 elements at a time
-            for (; kx <= kernelWidth - 4; kx += 4) {
-                float4 sharedData;
-                sharedData.x = sharedMem[rowOffset + kx];
-                sharedData.y = sharedMem[rowOffset + kx + 1];
-                sharedData.z = sharedMem[rowOffset + kx + 2];
-                sharedData.w = sharedMem[rowOffset + kx + 3];
-                
-                float4 kernelData;
-                kernelData.x = kernel[kernelRowOffset + kx];
-                kernelData.y = kernel[kernelRowOffset + kx + 1];
-                kernelData.z = kernel[kernelRowOffset + kx + 2];
-                kernelData.w = kernel[kernelRowOffset + kx + 3];
-                
-                sum += sharedData.x * kernelData.x + sharedData.y * kernelData.y + 
-                       sharedData.z * kernelData.z + sharedData.w * kernelData.w;
-            }
-            // Use float2 for remaining pairs
-            for (; kx <= kernelWidth - 2; kx += 2) {
-                float2 sharedData;
-                sharedData.x = sharedMem[rowOffset + kx];
-                sharedData.y = sharedMem[rowOffset + kx + 1];
-                
-                float2 kernelData;
-                kernelData.x = kernel[kernelRowOffset + kx];
-                kernelData.y = kernel[kernelRowOffset + kx + 1];
-                
-                sum += sharedData.x * kernelData.x + sharedData.y * kernelData.y;
-            }
-            // Process any remaining elements
-            for (; kx < kernelWidth; ++kx) {
-                sum += sharedMem[rowOffset + kx] * kernel[kernelRowOffset + kx];
-            }
-        }
-        output[y * imgWidth + x] = sum;
-    }
+    int imgWidth, int imgHeight, int kernelWidth, int kernelHeight) {
+extern __shared__ float sharedMem[];
+
+const int blockWidth  = blockDim.x;
+const int blockHeight = blockDim.y;
+int kernelRadiusX = kernelWidth / 2;
+int kernelRadiusY = kernelHeight / 2;
+
+int sharedWidth  = blockWidth + 2 * kernelRadiusX;
+int sharedHeight = blockHeight + 2 * kernelRadiusY;
+
+int x0 = blockIdx.x * blockWidth - kernelRadiusX;
+int y0 = blockIdx.y * blockHeight - kernelRadiusY;
+
+// Cooperative loading with manual clamping.
+for (int j = threadIdx.y; j < sharedHeight; j += blockHeight) {
+for (int i = threadIdx.x; i < sharedWidth; i += blockWidth) {
+int globalX = x0 + i;
+int globalY = y0 + j;
+// Clamp coordinates to image boundaries.
+if (globalX < 0) globalX = 0;
+if (globalX >= imgWidth) globalX = imgWidth - 1;
+if (globalY < 0) globalY = 0;
+if (globalY >= imgHeight) globalY = imgHeight - 1;
+sharedMem[j * sharedWidth + i] = input[globalY * imgWidth + globalX];
+}
+}
+__syncthreads();
+
+int x = blockIdx.x * blockWidth + threadIdx.x;
+int y = blockIdx.y * blockHeight + threadIdx.y;
+
+if (x < imgWidth && y < imgHeight) {
+float sum = 0.0f;
+int smemX = threadIdx.x + kernelRadiusX;
+int smemY = threadIdx.y + kernelRadiusY;
+for (int ky = 0; ky < kernelHeight; ky++) {
+for (int kx = 0; kx < kernelWidth; kx++) {
+sum += sharedMem[(smemY - kernelRadiusY + ky) * sharedWidth + (smemX - kernelRadiusX + kx)];
+}
+}
+output[y * imgWidth + x] = sum;
+}
 }
