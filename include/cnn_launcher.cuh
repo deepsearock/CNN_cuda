@@ -8,7 +8,6 @@
 #include "utils.cuh"
 
 // Declare the texture reference (declaration only)
-extern texture<float, 2, cudaReadModeElementType> texRef;
 
 // Function prototypes
 PerformanceMetrics cnn_cpu(float *h_input, float *h_output, float *h_mask,
