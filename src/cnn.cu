@@ -67,60 +67,53 @@ __global__ void naiveConvolution2D(const float* input, const float* kernel, floa
 
 // Optimized convolution kernel using shared memory and texture memory
 __global__ void optimizedConvolution2D(float* output, int imgWidth, int imgHeight, 
-                                       int kernelWidth, int kernelHeight) {
-    extern __shared__ float sharedMem[];
+    int kernelWidth, int kernelHeight) {
+extern __shared__ float sharedMem[];
 
-    int x = blockIdx.x * blockDim.x + threadIdx.x;
-    int y = blockIdx.y * blockDim.y + threadIdx.y;
+int blockWidth  = blockDim.x;
+int blockHeight = blockDim.y;
+int kernelRadiusX = kernelWidth / 2;
+int kernelRadiusY = kernelHeight / 2;
 
-    int threadX = threadIdx.x;
-    int threadY = threadIdx.y;
+// Dimensions of the shared memory tile
+int sharedWidth  = blockWidth  + 2 * kernelRadiusX;
+int sharedHeight = blockHeight + 2 * kernelRadiusY;
 
-    int kernelRadiusX = kernelWidth / 2;
-    int kernelRadiusY = kernelHeight / 2;
+// Compute the global coordinates of the top-left corner of the tile (including halo)
+int x0 = blockIdx.x * blockWidth - kernelRadiusX;
+int y0 = blockIdx.y * blockHeight - kernelRadiusY;
 
-    // Compute shared memory dimensions
-    int sharedWidth = blockDim.x + 2 * kernelRadiusX;
-    int sharedX = threadX + kernelRadiusX;
-    int sharedY = threadY + kernelRadiusY;
-
-    if (x < imgWidth && y < imgHeight) {
-        sharedMem[sharedY * sharedWidth + sharedX] = tex2D<float>(texRef, x, y);
-    }
-
-    // Load halo regions along X direction
-    if (threadX < kernelRadiusX) {
-        if (x >= kernelRadiusX) {
-            sharedMem[sharedY * sharedWidth + threadX] = tex2D(texRef, x - kernelRadiusX, y);
-        }
-        if (x + blockDim.x < imgWidth) {
-            sharedMem[sharedY * sharedWidth + sharedX + blockDim.x] = tex2D(texRef, x + blockDim.x, y);
-        }
-    }
-
-    // Load halo regions along Y direction
-    if (threadY < kernelRadiusY) {
-        if (y >= kernelRadiusY) {
-            sharedMem[threadY * sharedWidth + sharedX] = tex2D(texRef, x, y - kernelRadiusY);
-        }
-        if (y + blockDim.y < imgHeight) {
-            sharedMem[(sharedY + blockDim.y) * sharedWidth + sharedX] = tex2D(texRef, x, y + blockDim.y);
-        }
-    }
-
-    __syncthreads();
-
-    // Perform convolution using shared memory
-    if (x < imgWidth && y < imgHeight) {
-        float sum = 0.0f;
-        for (int ky = -kernelRadiusY; ky <= kernelRadiusY; ++ky) {
-            for (int kx = -kernelRadiusX; kx <= kernelRadiusX; ++kx) {
-                sum += sharedMem[(sharedY + ky) * sharedWidth + (sharedX + kx)];
-            }
-        }
-        output[y * imgWidth + x] = sum;
-    }
+// Load the tile into shared memory cooperatively.
+// Each thread loads multiple elements if necessary.
+for (int j = threadIdx.y; j < sharedHeight; j += blockHeight) {
+for (int i = threadIdx.x; i < sharedWidth; i += blockWidth) {
+int globalX = x0 + i;
+int globalY = y0 + j;
+// tex2D will use the texture's addressing mode (e.g., clamp) to handle boundaries.
+sharedMem[j * sharedWidth + i] = tex2D<float>(texRef, globalX, globalY);
 }
+}
+
+__syncthreads();
+
+// Now, each thread computes the convolution for one output pixel.
+int x = blockIdx.x * blockWidth + threadIdx.x;
+int y = blockIdx.y * blockHeight + threadIdx.y;
+
+if (x < imgWidth && y < imgHeight) {
+float sum = 0.0f;
+// The top-left index of the convolution window in shared memory is offset by kernel radii.
+int smemX = threadIdx.x;
+int smemY = threadIdx.y;
+for (int j = 0; j < kernelHeight; j++) {
+for (int i = 0; i < kernelWidth; i++) {
+sum += sharedMem[(smemY + j) * sharedWidth + (smemX + i)];
+}
+}
+output[y * imgWidth + x] = sum;
+}
+}
+
 
 // Convolution kernel using shared memory and vectorized memory loads without textures
 __global__ void vectorizedConvolution2D(const float* input, const float* kernel, float* output, 
