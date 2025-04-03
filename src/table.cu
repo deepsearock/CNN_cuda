@@ -8,7 +8,7 @@
 #include <fstream>
 #include <sstream>
 
-// Macro for error checking
+// macro to check cuda errors i should have utils file for this ohwell 
 #define CUDA_CHECK(call) {                                              \
     cudaError_t err = call;                                             \
     if(err != cudaSuccess) {                                             \
@@ -18,9 +18,7 @@
     }                                                                   \
 }
 
-//------------------------------------------------------
-// 1. Optimized GPU Convolution Kernel (Texture & Shared Memory)
-//------------------------------------------------------
+// 1. Optimized GPU Convolution Kernel (texture + shared memory) it really isnt optimized as its slower than shared memory only
 texture<int, cudaTextureType2D, cudaReadModeElementType> texRef;
 
 __global__ void convolution2DKernel(int *output, int imageWidth, int imageHeight, int maskWidth, int maskRadius) {
@@ -36,13 +34,13 @@ __global__ void convolution2DKernel(int *output, int imageWidth, int imageHeight
     int shared_x = tx + maskRadius;
     int shared_y = ty + maskRadius;
     
-    // Load central data from texture memory
+    // load the center region from textured memory into shared memory
     if (row < imageHeight && col < imageWidth)
         sharedMem[shared_y * sharedWidth + shared_x] = tex2D(texRef, col, row);
     else
         sharedMem[shared_y * sharedWidth + shared_x] = 0;
     
-    // Load halo regions (left, right, top, bottom, and corners)
+    // load the halo or ghost regions from textured memory into shared memory
     if (tx < maskRadius) {
         int halo_col = col - maskRadius;
         int value = (halo_col >= 0 && row < imageHeight) ? tex2D(texRef, halo_col, row) : 0;
@@ -63,7 +61,7 @@ __global__ void convolution2DKernel(int *output, int imageWidth, int imageHeight
         int value = (halo_row < imageHeight && col < imageWidth) ? tex2D(texRef, col, halo_row) : 0;
         sharedMem[(shared_y + maskRadius) * sharedWidth + shared_x] = value;
     }
-    // Corner halos:
+    // load the corner halos from textured memory into shared memory
     if (tx < maskRadius && ty < maskRadius) {
         int halo_col = col - maskRadius;
         int halo_row = row - maskRadius;
@@ -91,7 +89,7 @@ __global__ void convolution2DKernel(int *output, int imageWidth, int imageHeight
     
     __syncthreads();
     
-    // Convolution operation using shared memory tile
+    // convolution operation using the shared memory 
     if (row < imageHeight && col < imageWidth) {
         int output_value = 0;
         for (int i = -maskRadius; i <= maskRadius; i++) {
@@ -105,9 +103,7 @@ __global__ void convolution2DKernel(int *output, int imageWidth, int imageHeight
     }
 }
 
-//------------------------------------------------------
-// 2. Naive GPU Convolution Kernel (Global Memory Only)
-//------------------------------------------------------
+//2. naive gpu convolution kernel (global memory only) 
 __global__ void naiveConvolutionKernel(int *input, int *output, int imageWidth, int imageHeight, int maskWidth, int maskRadius) {
     int col = blockIdx.x * blockDim.x + threadIdx.x;
     int row = blockIdx.y * blockDim.y + threadIdx.y;
@@ -128,9 +124,8 @@ __global__ void naiveConvolutionKernel(int *input, int *output, int imageWidth, 
     }
 }
 
-//------------------------------------------------------
-// 3. Shared Memory GPU Convolution Kernel (Global Memory + Shared Memory)
-//------------------------------------------------------
+
+//3. shared memory gpu convolution kernel (global memory + shared memory)
 __global__ void sharedMemoryConvolutionKernel(int *input, int *output, int imageWidth, int imageHeight, int maskWidth, int maskRadius) {
     extern __shared__ int sharedMem[];
     
@@ -144,13 +139,13 @@ __global__ void sharedMemoryConvolutionKernel(int *input, int *output, int image
     int shared_x = tx + maskRadius;
     int shared_y = ty + maskRadius;
     
-    // Load central region from global memory into shared memory
+    // load the center region from global memory into shared memory
     if (row < imageHeight && col < imageWidth)
         sharedMem[shared_y * sharedWidth + shared_x] = input[row * imageWidth + col];
     else
         sharedMem[shared_y * sharedWidth + shared_x] = 0;
     
-    // Load halo regions from global memory.
+    // same as optimized kernel, load the halo or ghost regions from global memory into shared memory
     if (tx < maskRadius) {
         int halo_col = col - maskRadius;
         int value = (halo_col >= 0 && row < imageHeight) ? input[row * imageWidth + halo_col] : 0;
@@ -171,7 +166,7 @@ __global__ void sharedMemoryConvolutionKernel(int *input, int *output, int image
         int value = (halo_row < imageHeight && col < imageWidth) ? input[halo_row * imageWidth + col] : 0;
         sharedMem[(shared_y + maskRadius) * sharedWidth + shared_x] = value;
     }
-    // Corner halos:
+    // corner halos
     if (tx < maskRadius && ty < maskRadius) {
         int halo_col = col - maskRadius;
         int halo_row = row - maskRadius;
@@ -199,7 +194,7 @@ __global__ void sharedMemoryConvolutionKernel(int *input, int *output, int image
     
     __syncthreads();
     
-    // Convolution operation using the shared memory tile
+    // convolution operation
     if (row < imageHeight && col < imageWidth) {
         int sum = 0;
         for (int i = -maskRadius; i <= maskRadius; i++) {
@@ -211,9 +206,7 @@ __global__ void sharedMemoryConvolutionKernel(int *input, int *output, int image
     }
 }
 
-//------------------------------------------------------
-// 4. CPU Convolution Implementation
-//------------------------------------------------------
+// 4. cpu convolution function
 void convolution2D_CPU(const int *h_image, int *h_output, int imageWidth, int imageHeight, int maskWidth) {
     int maskRadius = maskWidth / 2;
     for (int row = 0; row < imageHeight; row++) {
@@ -235,9 +228,9 @@ void convolution2D_CPU(const int *h_image, int *h_output, int imageWidth, int im
 }
 
 int main(int argc, char **argv) {
-    // Default image dimensions: 512x512.
+    // default size 
     int dimX = 512, dimY = 512;
-    // Allow overriding image dimensions from command line.
+    // take input
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-i") == 0)
             dimX = atoi(argv[++i]);
@@ -247,27 +240,26 @@ int main(int argc, char **argv) {
     
     int imageSize = dimX * dimY;
     
-    // Allocate host memory for image and for kernel outputs.
+    // allocate host memory for the image and output arrays
     int *h_image         = (int *)malloc(sizeof(int) * imageSize);
-    int *h_output_gpu    = (int *)malloc(sizeof(int) * imageSize); // Optimized GPU (texture+shared)
-    int *h_output_naive  = (int *)malloc(sizeof(int) * imageSize); // Naive GPU (global only)
-    int *h_output_shared = (int *)malloc(sizeof(int) * imageSize); // Shared Memory GPU
+    int *h_output_gpu    = (int *)malloc(sizeof(int) * imageSize); // optimized GPU (texture+shared)
+    int *h_output_naive  = (int *)malloc(sizeof(int) * imageSize); // naive GPU (global only)
+    int *h_output_shared = (int *)malloc(sizeof(int) * imageSize); // shared Memory GPU
     int *h_output_cpu    = (int *)malloc(sizeof(int) * imageSize); // CPU result
     
-    // Initialize image with random values between 0 and 15.
+    // random image generation 0-15
     for (int i = 0; i < imageSize; i++) {
         h_image[i] = rand() % 16;
     }
     
-    // Define the mask sizes to test.
+    // mask sizes
     int maskSizes[] = {4, 6, 8, 10, 12, 14, 16, 18, 20};
     int numMasks = sizeof(maskSizes) / sizeof(maskSizes[0]);
     
-    // Fixed CUDA block and grid dimensions.
+    // cuda block size of 256 and 16x16 shape
     dim3 blockDim(16, 16);
     dim3 gridDim((dimX + blockDim.x - 1) / blockDim.x, (dimY + blockDim.y - 1) / blockDim.y);
     
-    // Build CSV file name to include image dimensions.
     std::ostringstream filename;
     filename << "results_" << dimX << "x" << dimY << ".csv";
     std::ofstream csvFile(filename.str());
@@ -275,28 +267,22 @@ int main(int argc, char **argv) {
         fprintf(stderr, "Error opening %s for writing.\n", filename.str().c_str());
         return EXIT_FAILURE;
     }
-    // Write a comment line with image dimensions.
     csvFile << "# Image dimensions: " << dimX << " x " << dimY << "\n";
-    // Write CSV header.
     csvFile << "MaskSize,OptimizedTime_ms,OptimizedGFLOPS,NaiveTime_ms,NaiveGFLOPS,SharedTime_ms,SharedGFLOPS,CPUTime_ms,CPUGFLOPS,Status\n";
     
-    // Loop over each mask size.
     for (int m = 0; m < numMasks; m++) {
         int maskWidth = maskSizes[m];
         int maskRadius = maskWidth / 2;
         
-        // Shared memory size based on the block and halo size.
+        // calculate shared memory size
         int sharedMemSize = (blockDim.x + 2 * maskRadius) * (blockDim.y + 2 * maskRadius) * sizeof(int);
         
-        // ----------------------------
-        // 1. Optimized GPU Convolution (Texture + Shared Memory)
-        // ----------------------------
+// kernel 1
         cudaArray *d_imageArray;
         cudaChannelFormatDesc channelDesc = cudaCreateChannelDesc<int>();
         CUDA_CHECK(cudaMallocArray(&d_imageArray, &channelDesc, dimX, dimY));
         CUDA_CHECK(cudaMemcpy2DToArray(d_imageArray, 0, 0, h_image, dimX * sizeof(int),
                                        dimX * sizeof(int), dimY, cudaMemcpyHostToDevice));
-        // Bind texture.
         texRef.addressMode[0] = cudaAddressModeClamp;
         texRef.addressMode[1] = cudaAddressModeClamp;
         texRef.filterMode     = cudaFilterModePoint;
@@ -324,9 +310,7 @@ int main(int argc, char **argv) {
         CUDA_CHECK(cudaEventDestroy(start));
         CUDA_CHECK(cudaEventDestroy(stop));
         
-        // ----------------------------
-        // 2. Naive GPU Convolution (Global Memory Only)
-        // ----------------------------
+// kernel 2
         int *d_input, *d_output_naive;
         CUDA_CHECK(cudaMalloc(&d_input, sizeof(int) * imageSize));
         CUDA_CHECK(cudaMalloc(&d_output_naive, sizeof(int) * imageSize));
@@ -349,9 +333,7 @@ int main(int argc, char **argv) {
         CUDA_CHECK(cudaEventDestroy(startNaive));
         CUDA_CHECK(cudaEventDestroy(stopNaive));
         
-        // ----------------------------
-        // 3. Shared Memory GPU Convolution (Global Memory + Shared Memory)
-        // ----------------------------
+// kernel 3
         int *d_input_shared, *d_output_shared;
         CUDA_CHECK(cudaMalloc(&d_input_shared, sizeof(int) * imageSize));
         CUDA_CHECK(cudaMalloc(&d_output_shared, sizeof(int) * imageSize));
@@ -374,17 +356,13 @@ int main(int argc, char **argv) {
         CUDA_CHECK(cudaEventDestroy(startShared));
         CUDA_CHECK(cudaEventDestroy(stopShared));
         
-        // ----------------------------
-        // 4. CPU Convolution
-        // ----------------------------
+// kernel 4 cpu
         auto cpu_start = std::chrono::high_resolution_clock::now();
         convolution2D_CPU(h_image, h_output_cpu, dimX, dimY, maskWidth);
         auto cpu_end = std::chrono::high_resolution_clock::now();
         std::chrono::duration<double, std::milli> elapsedTime_cpu = cpu_end - cpu_start;
         
-        // ----------------------------
-        // 5. Compare Results (all kernels vs CPU)
-        // ----------------------------
+// compare
         const double epsilon = 1e-5;
         bool correct = true;
         for (int i = 0; i < imageSize; i++) {
@@ -397,10 +375,7 @@ int main(int argc, char **argv) {
         }
         std::string status = correct ? "Correct" : "Mismatch";
         
-        // ----------------------------
-        // 6. Performance Calculations
-        // ----------------------------
-        // Note: Using opsPerPixel = (maskWidth * maskWidth) + 1 as in original code.
+// calculate GFLOPS
         double opsPerPixel = (maskWidth * maskWidth) + 1;
         double totalOps = imageSize * opsPerPixel;
         
@@ -416,9 +391,7 @@ int main(int argc, char **argv) {
         double seconds_cpu    = elapsedTime_cpu.count() / 1000.0;
         double gflops_cpu     = (totalOps / seconds_cpu) / 1e9;
         
-        // ----------------------------
-        // 7. Write results to CSV file.
-        // ----------------------------
+// write results to csv file
         csvFile << maskWidth << ","
                 << elapsedTime_gpu << "," << gflops_gpu << ","
                 << elapsedTime_naive << "," << gflops_naive << ","
@@ -430,7 +403,7 @@ int main(int argc, char **argv) {
     csvFile.close();
     printf("All kernels produced correct results. Results written to %s\n", filename.str().c_str());
     
-    // Clean up host memory.
+    // clean up
     free(h_image);
     free(h_output_gpu);
     free(h_output_naive);

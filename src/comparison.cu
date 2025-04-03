@@ -16,9 +16,7 @@
     }                                                                   \
 }
 
-//------------------------------------------------------
-// Existing Kernel: Optimized GPU Convolution using Texture & Shared Memory
-//------------------------------------------------------
+// optimized kernel
 texture<int, cudaTextureType2D, cudaReadModeElementType> texRef;
 
 __global__ void convolution2DKernel(int *output, int imageWidth, int imageHeight, int maskWidth, int maskRadius) {
@@ -34,13 +32,11 @@ __global__ void convolution2DKernel(int *output, int imageWidth, int imageHeight
     int shared_x = tx + maskRadius;
     int shared_y = ty + maskRadius;
     
-    // Load central data from texture memory
     if (row < imageHeight && col < imageWidth)
         sharedMem[shared_y * sharedWidth + shared_x] = tex2D(texRef, col, row);
     else
         sharedMem[shared_y * sharedWidth + shared_x] = 0;
     
-    // Load halo regions (left, right, top, bottom, and corners)
     if (tx < maskRadius) {
         int halo_col = col - maskRadius;
         int value = (halo_col >= 0 && row < imageHeight) ? tex2D(texRef, halo_col, row) : 0;
@@ -61,7 +57,6 @@ __global__ void convolution2DKernel(int *output, int imageWidth, int imageHeight
         int value = (halo_row < imageHeight && col < imageWidth) ? tex2D(texRef, col, halo_row) : 0;
         sharedMem[(shared_y + maskRadius) * sharedWidth + shared_x] = value;
     }
-    // Corner halos:
     if (tx < maskRadius && ty < maskRadius) {
         int halo_col = col - maskRadius;
         int halo_row = row - maskRadius;
@@ -89,7 +84,6 @@ __global__ void convolution2DKernel(int *output, int imageWidth, int imageHeight
     
     __syncthreads();
     
-    // Convolution operation using shared memory tile
     if (row < imageHeight && col < imageWidth) {
         int output_value = 0;
         for (int i = -maskRadius; i <= maskRadius; i++) {
@@ -103,9 +97,7 @@ __global__ void convolution2DKernel(int *output, int imageWidth, int imageHeight
     }
 }
 
-//------------------------------------------------------
-// Existing Kernel: Naive GPU Convolution (Global Memory Only)
-//------------------------------------------------------
+// naive kernel
 __global__ void naiveConvolutionKernel(int *input, int *output, int imageWidth, int imageHeight, int maskWidth, int maskRadius) {
     int col = blockIdx.x * blockDim.x + threadIdx.x;
     int row = blockIdx.y * blockDim.y + threadIdx.y;
@@ -126,9 +118,7 @@ __global__ void naiveConvolutionKernel(int *input, int *output, int imageWidth, 
     }
 }
 
-//------------------------------------------------------
-// NEW Kernel: Shared Memory Convolution (Global Memory Input + Shared Memory)
-//------------------------------------------------------
+// shared memory kernel
 __global__ void sharedMemoryConvolutionKernel(int *input, int *output, int imageWidth, int imageHeight, int maskWidth, int maskRadius) {
     extern __shared__ int sharedMem[];
     
@@ -142,38 +132,33 @@ __global__ void sharedMemoryConvolutionKernel(int *input, int *output, int image
     int shared_x = tx + maskRadius;
     int shared_y = ty + maskRadius;
     
-    // Load central region from global memory into shared memory
     if (row < imageHeight && col < imageWidth)
         sharedMem[shared_y * sharedWidth + shared_x] = input[row * imageWidth + col];
     else
         sharedMem[shared_y * sharedWidth + shared_x] = 0;
     
-    // Load halo regions from global memory.
-    // Left halo:
     if (tx < maskRadius) {
         int halo_col = col - maskRadius;
         int value = (halo_col >= 0 && row < imageHeight) ? input[row * imageWidth + halo_col] : 0;
         sharedMem[shared_y * sharedWidth + tx] = value;
     }
-    // Right halo:
     if (tx >= blockDim.x - maskRadius) {
         int halo_col = col + maskRadius;
         int value = (halo_col < imageWidth && row < imageHeight) ? input[row * imageWidth + halo_col] : 0;
         sharedMem[shared_y * sharedWidth + shared_x + maskRadius] = value;
     }
-    // Top halo:
     if (ty < maskRadius) {
         int halo_row = row - maskRadius;
         int value = (halo_row >= 0 && col < imageWidth) ? input[halo_row * imageWidth + col] : 0;
         sharedMem[ty * sharedWidth + shared_x] = value;
     }
-    // Bottom halo:
+
     if (ty >= blockDim.y - maskRadius) {
         int halo_row = row + maskRadius;
         int value = (halo_row < imageHeight && col < imageWidth) ? input[halo_row * imageWidth + col] : 0;
         sharedMem[(shared_y + maskRadius) * sharedWidth + shared_x] = value;
     }
-    // Corner halos:
+
     if (tx < maskRadius && ty < maskRadius) {
         int halo_col = col - maskRadius;
         int halo_row = row - maskRadius;
@@ -201,7 +186,6 @@ __global__ void sharedMemoryConvolutionKernel(int *input, int *output, int image
     
     __syncthreads();
     
-    // Convolution operation using the shared memory tile
     if (row < imageHeight && col < imageWidth) {
         int sum = 0;
         for (int i = -maskRadius; i <= maskRadius; i++) {
@@ -213,9 +197,7 @@ __global__ void sharedMemoryConvolutionKernel(int *input, int *output, int image
     }
 }
 
-//------------------------------------------------------
-// CPU Convolution Implementation
-//------------------------------------------------------
+//cpu
 void convolution2D_CPU(const int *h_image, int *h_output, int imageWidth, int imageHeight, int maskWidth) {
     int maskRadius = maskWidth / 2;
     for (int row = 0; row < imageHeight; row++) {
@@ -237,7 +219,7 @@ void convolution2D_CPU(const int *h_image, int *h_output, int imageWidth, int im
 }
 
 int main(int argc, char **argv) {
-    // Default dimensions: 512x512 image with a 3x3 mask.
+    // defualt
     int dimX = 512, dimY = 512, dimK = 3;
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-i") == 0)
@@ -250,14 +232,14 @@ int main(int argc, char **argv) {
     
     int imageSize = dimX * dimY;
     
-    // Allocate host memory for image and results.
+    // allocate host memory
     int *h_image         = (int *)malloc(sizeof(int) * imageSize);
-    int *h_output_gpu      = (int *)malloc(sizeof(int) * imageSize); // optimized GPU (texture+shared)
-    int *h_output_naive    = (int *)malloc(sizeof(int) * imageSize); // naive GPU (global only)
-    int *h_output_shared   = (int *)malloc(sizeof(int) * imageSize); // new shared-memory GPU kernel
-    int *h_output_cpu      = (int *)malloc(sizeof(int) * imageSize); // CPU result
+    int *h_output_gpu      = (int *)malloc(sizeof(int) * imageSize); 
+    int *h_output_naive    = (int *)malloc(sizeof(int) * imageSize);
+    int *h_output_shared   = (int *)malloc(sizeof(int) * imageSize);
+    int *h_output_cpu      = (int *)malloc(sizeof(int) * imageSize); 
     
-    // Random image values between 0 and 15.
+    // rand
     for (int i = 0; i < imageSize; i++) {
         h_image[i] = rand() % 16;
     }
@@ -265,9 +247,7 @@ int main(int argc, char **argv) {
     int maskWidth = dimK;
     int maskRadius = maskWidth / 2;
     
-    //------------------------------------------------------
-    // Optimized GPU Convolution (Texture + Shared Memory)
-    //------------------------------------------------------
+// texture memory kernel
     cudaArray *d_imageArray;
     cudaChannelFormatDesc channelDesc = cudaCreateChannelDesc<int>();
     CUDA_CHECK(cudaMallocArray(&d_imageArray, &channelDesc, dimX, dimY));
@@ -307,9 +287,7 @@ int main(int argc, char **argv) {
     CUDA_CHECK(cudaFreeArray(d_imageArray));
     CUDA_CHECK(cudaFree(d_output));
     
-    //------------------------------------------------------
-    // Naive GPU Convolution (Global Memory Only)
-    //------------------------------------------------------
+// naive kernel
     int *d_input, *d_output_naive;
     CUDA_CHECK(cudaMalloc(&d_input, sizeof(int) * imageSize));
     CUDA_CHECK(cudaMalloc(&d_output_naive, sizeof(int) * imageSize));
@@ -334,9 +312,7 @@ int main(int argc, char **argv) {
     CUDA_CHECK(cudaFree(d_input));
     CUDA_CHECK(cudaFree(d_output_naive));
     
-    //------------------------------------------------------
-    // NEW: Shared Memory GPU Convolution (Global Memory + Shared Memory)
-    //------------------------------------------------------
+//shared memory kernel
     int *d_input_shared, *d_output_shared;
     CUDA_CHECK(cudaMalloc(&d_input_shared, sizeof(int) * imageSize));
     CUDA_CHECK(cudaMalloc(&d_output_shared, sizeof(int) * imageSize));
@@ -361,17 +337,12 @@ int main(int argc, char **argv) {
     CUDA_CHECK(cudaFree(d_input_shared));
     CUDA_CHECK(cudaFree(d_output_shared));
     
-    //------------------------------------------------------
-    // CPU Convolution
-    //------------------------------------------------------
     auto cpu_start = std::chrono::high_resolution_clock::now();
     convolution2D_CPU(h_image, h_output_cpu, dimX, dimY, maskWidth);
     auto cpu_end = std::chrono::high_resolution_clock::now();
     std::chrono::duration<double, std::milli> elapsedTime_cpu = cpu_end - cpu_start;
     
-    //------------------------------------------------------
-    // Compare Results (Optimized, Naive, and Shared Memory GPU vs CPU)
-    //------------------------------------------------------
+
     int errorCount = 0;
     for (int i = 0; i < imageSize; i++) {
         if (abs(h_output_gpu[i] - h_output_cpu[i]) > 1e-5) {
@@ -414,9 +385,7 @@ int main(int argc, char **argv) {
     else
         printf("Total mismatches (Shared Memory GPU vs CPU): %d\n", errorCount);
     
-    //------------------------------------------------------
-    // Performance Calculations
-    //------------------------------------------------------
+
     double opsPerPixel = (maskWidth * maskWidth) + 1;
     double totalOps = imageSize * opsPerPixel;
     
@@ -437,7 +406,6 @@ int main(int argc, char **argv) {
     printf("Shared Memory GPU kernel execution time: %f ms, Performance: %f GFLOPS\n", elapsedTime_shared, gflops_shared);
     printf("CPU execution time: %f ms, Performance: %f GFLOPS\n", elapsedTime_cpu.count(), gflops_cpu);
     
-    // (Optional) Print a sample of each output.
     printf("Sample output (Optimized GPU):\n");
     for (int i = 0; i < 10; i++) printf("%d ", h_output_gpu[i]);
     printf("\n");
@@ -450,7 +418,7 @@ int main(int argc, char **argv) {
     for (int i = 0; i < 10; i++) printf("%d ", h_output_shared[i]);
     printf("\n");
     
-    // Clean up CUDA events.
+
     CUDA_CHECK(cudaEventDestroy(start));
     CUDA_CHECK(cudaEventDestroy(stop));
     CUDA_CHECK(cudaEventDestroy(startNaive));
