@@ -76,9 +76,6 @@ PerformanceMetrics cnn_naive(float *h_input, float *h_output, float *h_mask, int
 
     // Copy result back to host
     cudaMemcpy(h_output, d_output, img_size, cudaMemcpyDeviceToHost);
-    
-    // Ensure d_input is defined before use
-    float *d_input = nullptr;
 
     // Free device memory
     cudaFree(d_input);
@@ -134,11 +131,8 @@ PerformanceMetrics cnn_optimized(float *h_input, float *h_output, float *h_mask,
     // Free device memory
     cudaFreeArray(cuArray);
     // Free device memory
+    // Free device memory
     cudaFreeArray(cuArray);
-    cudaFreeArray(cuArray);
-
-
-// Function to launch the vectorized convolution kernel
 PerformanceMetrics cnn_vectorized(float *h_input, float *h_output, float *h_mask, int dimX, int dimY, int dimK) {
     float *d_input, *d_output, *d_mask;
     size_t img_size = dimX * dimY * sizeof(float);
@@ -159,19 +153,14 @@ PerformanceMetrics cnn_vectorized(float *h_input, float *h_output, float *h_mask
     PerformanceMetrics metrics = measurePerformance((void*)vectorizedConvolution2D, KernelType::VECTORIZED,
                                                        d_input, d_mask, d_output, 
                                                        dimX, dimY, dimK, dimK,
-                                                       gridDim, blockDim);
-                                                   gridDim, blockDim);
-    
+    // Set grid and block dimensions
+    dim3 blockDim(16, 16);
+    dim3 gridDim((dimX + blockDim.x - 1) / blockDim.x, 
+                 (dimY + blockDim.y - 1) / blockDim.y);
     PerformanceMetrics metrics = measurePerformance((void*)vectorizedConvolution2D, true,
                                                    d_input, d_mask, d_output, 
                                                    dimX, dimY, dimK, dimK,
                                                    gridDim, blockDim);
-    cudaMemcpy(h_output, d_output, img_size, cudaMemcpyDeviceToHost);
-
-    // Free device memory
-    cudaFree(d_input);
-    cudaFree(d_output);
-    cudaFree(d_mask);
     
     return metrics;
 }
