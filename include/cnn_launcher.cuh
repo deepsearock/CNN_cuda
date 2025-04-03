@@ -89,6 +89,9 @@ PerformanceMetrics cnn_naive(float *h_input, float *h_output, float *h_mask, int
 
 // Function to launch the optimized convolution kernel using texture memory
 PerformanceMetrics cnn_optimized(float *h_input, float *h_output, float *h_mask, int dimX, int dimY, int dimK) {
+
+    texture<float, 2, cudaReadModeElementType> texRef;
+    
     float *d_output, *d_mask;
     size_t img_size = dimX * dimY * sizeof(float);
     size_t mask_size = dimK * dimK * sizeof(float);
