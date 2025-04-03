@@ -3,7 +3,7 @@
 #include <string.h>
 #include <cuda_runtime.h>
 #include "../include/cnn_launcher.cuh"
-
+#include <algorithm> 
 int main(int argc, char** argv) {
     // Default dimensions
     int dimX = 1024;
