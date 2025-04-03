@@ -4,6 +4,8 @@
 #include <cuda_runtime.h>
 #include "../include/cnn_launcher.cuh"
 #include <algorithm> 
+texture<float, 2, cudaReadModeElementType> texRef;
+
 int main(int argc, char** argv) {
     // Default dimensions
     int dimX = 1024;
