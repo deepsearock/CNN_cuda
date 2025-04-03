@@ -9,6 +9,7 @@
 
 // Texture reference for optimized kernel
 extern texture<float, 2, cudaReadModeElementType> texRef;
+
 // CPU performance measurement function
 PerformanceMetrics cnn_cpu(float *h_input, float *h_output, float *h_mask, int dimX, int dimY, int dimK) {
     PerformanceMetrics metrics;
@@ -45,7 +46,8 @@ PerformanceMetrics cnn_cpu(float *h_input, float *h_output, float *h_mask, int d
     
     return metrics;
 }
-// Function to launch the convolution kernel
+
+// Function to launch the naive convolution kernel
 PerformanceMetrics cnn_naive(float *h_input, float *h_output, float *h_mask, int dimX, int dimY, int dimK) {
     float *d_input, *d_output, *d_mask;
     size_t img_size = dimX * dimY * sizeof(float);
@@ -67,9 +69,9 @@ PerformanceMetrics cnn_naive(float *h_input, float *h_output, float *h_mask, int
     
     // Measure performance using the naive kernel
     PerformanceMetrics metrics = measurePerformance((void*)naiveConvolution2D, KernelType::NAIVE,
-                                                   d_input, d_mask, d_output, 
-                                                   dimX, dimY, dimK, dimK,
-                                                   gridDim, blockDim);
+                                                      d_input, d_mask, d_output, 
+                                                      dimX, dimY, dimK, dimK,
+                                                      gridDim, blockDim);
     
     printf("Naive Convolution Performance: %f ms, %f GFLOPS\n", 
            metrics.executionTime, metrics.gflops);
@@ -91,7 +93,7 @@ PerformanceMetrics cnn_optimized(float *h_input, float *h_output, float *h_mask,
     size_t img_size = dimX * dimY * sizeof(float);
     size_t mask_size = dimK * dimK * sizeof(float);
     
-    // Allocate device memory
+    // Allocate device memory for output and mask
     cudaMalloc((void**)&d_output, img_size);
     cudaMalloc((void**)&d_mask, mask_size);
     
@@ -114,25 +116,29 @@ PerformanceMetrics cnn_optimized(float *h_input, float *h_output, float *h_mask,
     // Set grid and block dimensions
     dim3 blockDim(16, 16);
     dim3 gridDim((dimX + blockDim.x - 1) / blockDim.x, 
-    PerformanceMetrics metrics = measurePerformance((void*)optimizedConvolution2D, KernelType::OPTIMIZED,
+                 (dimY + blockDim.y - 1) / blockDim.y);
     
     // Measure performance using the optimized kernel
-    PerformanceMetrics metrics = measurePerformance((void*)optimizedConvolution2D, true,
-                                                   nullptr, d_mask, d_output, 
-                                                   dimX, dimY, dimK, dimK,
-                                                   gridDim, blockDim);
-
+    PerformanceMetrics metrics = measurePerformance((void*)optimizedConvolution2D, KernelType::OPTIMIZED,
+                                                      nullptr, d_mask, d_output, 
+                                                      dimX, dimY, dimK, dimK,
+                                                      gridDim, blockDim);
+    
     // Copy result back to host
     cudaMemcpy(h_output, d_output, img_size, cudaMemcpyDeviceToHost);
 
-    // Unbind texture
+    // Unbind texture and free CUDA array
     cudaUnbindTexture(texRef);
+    cudaFreeArray(cuArray);
     
     // Free device memory
-    cudaFreeArray(cuArray);
-    // Free device memory
-    // Free device memory
-    cudaFreeArray(cuArray);
+    cudaFree(d_output);
+    cudaFree(d_mask);
+    
+    return metrics;
+}
+
+// Function to launch the vectorized convolution kernel
 PerformanceMetrics cnn_vectorized(float *h_input, float *h_output, float *h_mask, int dimX, int dimY, int dimK) {
     float *d_input, *d_output, *d_mask;
     size_t img_size = dimX * dimY * sizeof(float);
@@ -150,18 +156,23 @@ PerformanceMetrics cnn_vectorized(float *h_input, float *h_output, float *h_mask
     // Set grid and block dimensions
     dim3 blockDim(16, 16);
     dim3 gridDim((dimX + blockDim.x - 1) / blockDim.x, 
-    PerformanceMetrics metrics = measurePerformance((void*)vectorizedConvolution2D, KernelType::VECTORIZED,
-                                                       d_input, d_mask, d_output, 
-                                                       dimX, dimY, dimK, dimK,
-    // Set grid and block dimensions
-    dim3 blockDim(16, 16);
-    dim3 gridDim((dimX + blockDim.x - 1) / blockDim.x, 
                  (dimY + blockDim.y - 1) / blockDim.y);
-    PerformanceMetrics metrics = measurePerformance((void*)vectorizedConvolution2D, true,
-                                                   d_input, d_mask, d_output, 
-                                                   dimX, dimY, dimK, dimK,
-                                                   gridDim, blockDim);
+    
+    // Measure performance using the vectorized kernel
+    PerformanceMetrics metrics = measurePerformance((void*)vectorizedConvolution2D, KernelType::VECTORIZED,
+                                                      d_input, d_mask, d_output, 
+                                                      dimX, dimY, dimK, dimK,
+                                                      gridDim, blockDim);
+    
+    // Copy result back to host
+    cudaMemcpy(h_output, d_output, img_size, cudaMemcpyDeviceToHost);
+    
+    // Free device memory
+    cudaFree(d_input);
+    cudaFree(d_output);
+    cudaFree(d_mask);
     
     return metrics;
 }
+
 #endif // CNN_LAUNCHER_CUH
