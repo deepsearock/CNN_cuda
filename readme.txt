@@ -1,9 +1,4 @@
-Lab3: CNN
-
-Zhaorui Wang
-cwid: 20007447
-
-The lab and spreadsheet with some data 
+CNN in Cuda
 
 In order to build you must run
 
